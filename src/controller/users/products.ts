@@ -186,10 +186,9 @@ export const buildProductAggregationPipeline = (
       },
     },
 
-    // Precompute discounted main price and internal SKUs so variation options can derive quantity, price, and final_price.
+    // Precompute internal SKUs so variation options can derive quantity and price.
     {
       $addFields: {
-        final_price: buildDiscountedPriceExpr("$price"),
         _skus: {
           $map: {
             input: "$prices",
@@ -197,7 +196,6 @@ export const buildProductAggregationPipeline = (
             in: {
               _id: "$$price._id",
               price: "$$price.price",
-              final_price: buildDiscountedPriceExpr("$$price.price"),
               quantity: {
                 $let: {
                   vars: {
@@ -254,7 +252,7 @@ export const buildProductAggregationPipeline = (
         show_quantity: { $ifNull: ["$show_quantity", false] },
 
         // 4️⃣ Discounted price for the main price
-        final_price: 1,
+        final_price: buildDiscountedPriceExpr("$price"),
 
         discount: {
           $cond: {
@@ -350,20 +348,6 @@ export const buildProductAggregationPipeline = (
                                   },
                                 },
                                 { $ifNull: ["$price", 0] },
-                              ],
-                            },
-                            final_price: {
-                              $ifNull: [
-                                {
-                                  $min: {
-                                    $map: {
-                                      input: "$$matchingSkus",
-                                      as: "sku",
-                                      in: "$$sku.final_price",
-                                    },
-                                  },
-                                },
-                                { $ifNull: ["$final_price", 0] },
                               ],
                             },
                           },
