@@ -329,16 +329,40 @@ export const buildProductAggregationPipeline = (
                           "$$opt",
                           {
                             // ستوك الـ option ده = مجموع ستوك كل الـ SKUs اللي فيها الـ option ده
-                            quantity: { $sum: "$$matchingSkus.quantity" },
+                            quantity: {
+                              $sum: {
+                                $map: {
+                                  input: "$$matchingSkus",
+                                  as: "sku",
+                                  in: "$$sku.quantity",
+                                },
+                              },
+                            },
                             price: {
                               $ifNull: [
-                                { $min: "$$matchingSkus.price" },
+                                {
+                                  $min: {
+                                    $map: {
+                                      input: "$$matchingSkus",
+                                      as: "sku",
+                                      in: "$$sku.price",
+                                    },
+                                  },
+                                },
                                 { $ifNull: ["$price", 0] },
                               ],
                             },
                             final_price: {
                               $ifNull: [
-                                { $min: "$$matchingSkus.final_price" },
+                                {
+                                  $min: {
+                                    $map: {
+                                      input: "$$matchingSkus",
+                                      as: "sku",
+                                      in: "$$sku.final_price",
+                                    },
+                                  },
+                                },
                                 { $ifNull: ["$final_price", 0] },
                               ],
                             },
