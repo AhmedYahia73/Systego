@@ -82,6 +82,7 @@ export const MODULES = [
   "profile",
   "installments",
   "home",
+  "sales",
 ] as const;
 
 // أسماء بس، من غير ids

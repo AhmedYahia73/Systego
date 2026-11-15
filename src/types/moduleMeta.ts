@@ -99,6 +99,7 @@ export const MODULE_META: Record<
     ar: "التقسيط",
     group: "sales",
   },
+  sales: { en: "Sales & Customers", ar: "المبيعات والعملاء", group: "sales" },
 
   // Purchases & Stock
   purchase: { en: "Purchases", ar: "المشتريات", group: "purchases" },
