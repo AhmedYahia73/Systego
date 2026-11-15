@@ -8,7 +8,7 @@ import { WarehouseModel } from "../../../models/schema/admin/Warehouse";
 import { WastedModel } from "../../../models/schema/admin/wasted";
 import { SuccessResponse } from "../../../utils/response";
 
-// ==================== Create Wasted Entry (Without stock decrement) ====================
+// ==================== Create Wasted Entry (With stock decrement) ====================
 export const createWasted = async (req: Request, res: Response) => {
   try {
     const {
@@ -108,17 +108,82 @@ export const createWasted = async (req: Request, res: Response) => {
       );
     }
 
-    // Create the Wasted record without deducting stock
-    const wastedDoc = await WastedModel.create({
+    // 1. Atomically decrement stock from Product_WarehouseModel
+    const stockQuery: any = {
       productId,
-      productPriceId: normalizedProductPriceId,
       warehouseId,
-      quantity: numQuantity,
-      reason,
-      note,
-      userId,
-      isApproved: false,
+      quantity: { $gte: numQuantity },
+    };
+
+    if (normalizedProductPriceId) {
+      stockQuery.productPriceId = normalizedProductPriceId;
+    } else {
+      stockQuery.$or = [
+        { productPriceId: null },
+        { productPriceId: { $exists: false } },
+      ];
+    }
+
+    const stockDoc = await Product_WarehouseModel.findOneAndUpdate(
+      stockQuery,
+      { $inc: { quantity: -numQuantity } },
+      { new: true }
+    );
+
+    if (!stockDoc) {
+      throw new BadRequest(
+        "Not enough stock in this warehouse to waste this quantity"
+      );
+    }
+
+    // 2. Decrement product total quantity
+    await ProductModel.findByIdAndUpdate(productId, {
+      $inc: { quantity: -numQuantity },
     });
+
+    // 3. If variant, decrement variation quantity
+    if (normalizedProductPriceId) {
+      await ProductPriceModel.findByIdAndUpdate(normalizedProductPriceId, {
+        $inc: { quantity: -numQuantity },
+      });
+    }
+
+    // 4. Decrement warehouse stock quantity
+    await WarehouseModel.findByIdAndUpdate(warehouseId, {
+      $inc: { stock_Quantity: -numQuantity },
+    });
+
+    // 5. Create the Wasted record
+    let wastedDoc;
+    try {
+      wastedDoc = await WastedModel.create({
+        productId,
+        productPriceId: normalizedProductPriceId,
+        warehouseId,
+        quantity: numQuantity,
+        reason,
+        note,
+        userId,
+        isApproved: true,
+      });
+    } catch (createErr) {
+      // Rollback stock decrement if Wasted creation fails
+      await Product_WarehouseModel.findByIdAndUpdate(stockDoc._id, {
+        $inc: { quantity: numQuantity },
+      });
+      await ProductModel.findByIdAndUpdate(productId, {
+        $inc: { quantity: numQuantity },
+      });
+      if (normalizedProductPriceId) {
+        await ProductPriceModel.findByIdAndUpdate(normalizedProductPriceId, {
+          $inc: { quantity: numQuantity },
+        });
+      }
+      await WarehouseModel.findByIdAndUpdate(warehouseId, {
+        $inc: { stock_Quantity: numQuantity },
+      });
+      throw createErr;
+    }
 
     SuccessResponse(res, { message: "Wasted entry created", wastedDoc });
   } catch (error: any) {
