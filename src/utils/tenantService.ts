@@ -58,6 +58,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 10 minutes
 
 let cachedData: TenantInfo | null = null;
 let cachedAt: number = 0;
+let inFlightPromise: Promise<TenantInfo> | null = null;
 
 function isCacheValid(): boolean {
     return cachedData !== null && (Date.now() - cachedAt) < CACHE_TTL_MS;
@@ -70,6 +71,7 @@ function isCacheValid(): boolean {
 export function clearCache(): void {
     cachedData = null;
     cachedAt = 0;
+    inFlightPromise = null;
 }
 
 // ─── API Client ────────────────────────────────────────────────────
@@ -106,37 +108,47 @@ export async function getTenantInfo(): Promise<TenantInfo> {
         return cachedData!;
     }
 
-    try {
-        const { data } = await getClient().get<{ success: boolean; data: any }>("/api/tenant/verify");
-
-        // The Super Systego response shape: { success: true, data: { message, tenant, features, package } }
-        const responseData = data?.data || data;
-
-        const tenantInfo: TenantInfo = {
-            tenant: responseData.tenant,
-            features: responseData.features,
-            package: responseData.package,
-            subscription: responseData.subscription || null,
-            locked: responseData.locked,
-        };
-
-        // Update cache
-        cachedData = tenantInfo;
-        cachedAt = Date.now();
-
-        console.log(`[TenantService] Verified tenant: ${tenantInfo.tenant?.company_name} | Ecommerce: ${tenantInfo.features?.haveEcommerce} | MobileApp: ${tenantInfo.features?.haveMobileApp}`);
-
-        return tenantInfo;
-    } catch (error: any) {
-        // If cache exists but is stale, return stale data rather than blocking the request
-        if (cachedData) {
-            console.warn(`[TenantService] Failed to refresh tenant info, using stale cache: ${error.message}`);
-            return cachedData;
-        }
-
-        console.error(`[TenantService] Failed to verify tenant: ${error.message}`);
-        throw new Error(`Failed to verify tenant subscription: ${error.message}`);
+    if (inFlightPromise) {
+        return inFlightPromise;
     }
+
+    inFlightPromise = (async () => {
+        try {
+            const { data } = await getClient().get<{ success: boolean; data: any }>("/api/tenant/verify");
+
+            // The Super Systego response shape: { success: true, data: { message, tenant, features, package } }
+            const responseData = data?.data || data;
+
+            const tenantInfo: TenantInfo = {
+                tenant: responseData.tenant,
+                features: responseData.features,
+                package: responseData.package,
+                subscription: responseData.subscription || null,
+                locked: responseData.locked,
+            };
+
+            // Update cache
+            cachedData = tenantInfo;
+            cachedAt = Date.now();
+
+            console.log(`[TenantService] Verified tenant: ${tenantInfo.tenant?.company_name} | Ecommerce: ${tenantInfo.features?.haveEcommerce} | MobileApp: ${tenantInfo.features?.haveMobileApp}`);
+
+            return tenantInfo;
+        } catch (error: any) {
+            // If cache exists but is stale, return stale data rather than blocking the request
+            if (cachedData) {
+                console.warn(`[TenantService] Failed to refresh tenant info, using stale cache: ${error.message}`);
+                return cachedData;
+            }
+
+            console.error(`[TenantService] Failed to verify tenant: ${error.message}`);
+            throw new Error(`Failed to verify tenant subscription: ${error.message}`);
+        } finally {
+            inFlightPromise = null;
+        }
+    })();
+
+    return inFlightPromise;
 }
 
 /**
