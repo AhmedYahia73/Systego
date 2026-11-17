@@ -310,7 +310,7 @@ export const getProduct = async (
   const products = await ProductModel.find(productFilter)
     .populate("categoryId")
     .populate("brandId")
-    .populate("taxesId")
+    .populate("taxesId", "_id name")
     .populate("discountId", "_id name")
     .lean();
 
@@ -385,8 +385,18 @@ export const getProduct = async (
         }),
       );
 
+      const tax = product.taxesId
+        ? {
+            _id: (product.taxesId as any)._id,
+            id: (product.taxesId as any)._id,
+            name: (product.taxesId as any).name,
+          }
+        : null;
+
       return {
         ...product,
+        taxesId: product.taxesId ?? null,
+        tax,
         quantity:
           prices.length === 0 ? simpleProductQuantity : product.quantity,
         totalQuantity,
