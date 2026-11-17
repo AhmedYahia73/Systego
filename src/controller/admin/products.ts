@@ -384,19 +384,11 @@ export const getProduct = async (
           };
         }),
       );
-
-      const tax = product.taxesId
-        ? {
-            _id: (product.taxesId as any)._id,
-            id: (product.taxesId as any)._id,
-            name: (product.taxesId as any).name,
-          }
-        : null;
+ 
 
       return {
         ...product,
-        taxesId: product.taxesId ?? null,
-        tax,
+        taxesId: product.taxesId ?? null, 
         quantity:
           prices.length === 0 ? simpleProductQuantity : product.quantity,
         totalQuantity,
