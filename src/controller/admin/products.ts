@@ -384,7 +384,7 @@ export const getProduct = async (
           );
 
           const variantPricing = calculateProductPricing({
-            basePrice: price.price,
+            basePrice: price.price ?? 0,
             taxDoc: product.taxesId,
             discountDoc: product.discountId,
             hasVariations: true,
@@ -408,7 +408,7 @@ export const getProduct = async (
       );
 
       const productPricing = calculateProductPricing({
-        basePrice: product.price,
+        basePrice: product.price ?? 0,
         taxDoc: product.taxesId,
         discountDoc: product.discountId,
         hasVariations,
@@ -519,7 +519,7 @@ export const getOneProduct = async (
       }));
 
       const variantPricing = calculateProductPricing({
-        basePrice: price.price,
+        basePrice: price.price ?? 0,
         taxDoc: product.taxesId,
         discountDoc: product.discountId,
         hasVariations: true,
@@ -543,7 +543,7 @@ export const getOneProduct = async (
   );
 
   const productPricing = calculateProductPricing({
-    basePrice: product.price,
+    basePrice: product.price ?? 0,
     taxDoc: product.taxesId,
     discountDoc: product.discountId,
     hasVariations,

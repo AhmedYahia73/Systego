@@ -173,7 +173,7 @@ export interface PricingResult {
 }
 
 export function calculateProductPricing(params: {
-  basePrice: number;
+  basePrice?: number | null;
   taxDoc: any;
   discountDoc: any;
   hasVariations: boolean;
@@ -262,7 +262,7 @@ export function calculateProductPricing(params: {
 }
 
 export function calculateLineItemPricing(params: {
-  basePrice: number;
+  basePrice?: number | null;
   hasVariations: boolean;
   taxRate?: number;
   taxType?: "percentage" | "fixed";

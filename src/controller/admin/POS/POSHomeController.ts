@@ -155,7 +155,7 @@ const buildWarehouseProductList = async (
         for (const a of attrs) attributes[a.name] = a.value;
 
         const variantPricing = calculateProductPricing({
-          basePrice: v.price,
+          basePrice: v.price ?? 0,
           taxDoc: product.taxesId,
           discountDoc: product.discountId,
           hasVariations: true,
@@ -198,7 +198,7 @@ const buildWarehouseProductList = async (
       const different_price = distinctPrices.size > 1;
 
       const productPricing = calculateProductPricing({
-        basePrice: product.price,
+        basePrice: product.price ?? 0,
         taxDoc: product.taxesId,
         discountDoc: product.discountId,
         hasVariations,
@@ -416,7 +416,7 @@ export const getActiveBundles = async (req: Request, res: Response) => {
                 .lean();
 
               const variantPricing = calculateProductPricing({
-                basePrice: v.price,
+                basePrice: v.price ?? 0,
                 taxDoc: product.taxesId,
                 discountDoc: product.discountId,
                 hasVariations: true,
@@ -445,7 +445,7 @@ export const getActiveBundles = async (req: Request, res: Response) => {
           const isVariationFixed = !!p.productPriceId;
 
           const productPricing = calculateProductPricing({
-            basePrice: product.price,
+            basePrice: product.price ?? 0,
             taxDoc: product.taxesId,
             discountDoc: product.discountId,
             hasVariations,
