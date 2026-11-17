@@ -112,7 +112,7 @@ export const roundCurrency = (val: number): number =>
 
 export interface DiscountCheckOptions {
   applyIn?: string; // "POS" | "E-commerce"
-  warehouseId?: string | any;
+  warehouseId?: string | any | any[];
 }
 
 export function isDiscountApplicable(
@@ -132,10 +132,14 @@ export function isDiscountApplicable(
   }
 
   if (options.warehouseId && Array.isArray(discount.warehouse_ids)) {
-    const wIdStr = options.warehouseId.toString();
-    return discount.warehouse_ids.some(
-      (w: any) => (w?._id ? w._id.toString() : w?.toString()) === wIdStr
-    );
+    const targetIds: string[] = Array.isArray(options.warehouseId)
+      ? options.warehouseId.map((w: any) => (w?._id ? w._id.toString() : w?.toString()))
+      : [options.warehouseId?._id ? options.warehouseId._id.toString() : options.warehouseId.toString()];
+
+    return discount.warehouse_ids.some((w: any) => {
+      const idStr = w?._id ? w._id.toString() : w?.toString();
+      return targetIds.includes(idStr);
+    });
   }
 
   if (!options.warehouseId) {
@@ -147,13 +151,6 @@ export function isDiscountApplicable(
 
 export interface PricingResult {
   taxId: {
-    _id: any;
-    name: string;
-    ar_name: string;
-    amount: number;
-    type: "percentage" | "fixed";
-  } | null;
-  taxesId: {
     _id: any;
     name: string;
     ar_name: string;
@@ -178,7 +175,7 @@ export function calculateProductPricing(params: {
   discountDoc: any;
   hasVariations: boolean;
   isOption?: boolean;
-  warehouseId?: string | any;
+  warehouseId?: string | any | any[];
   applyIn?: string;
 }): PricingResult {
   const basePrice = roundCurrency(Number(params.basePrice) || 0);
@@ -253,7 +250,6 @@ export function calculateProductPricing(params: {
 
   return {
     taxId: activeTax,
-    taxesId: activeTax,
     discountId: activeDiscount,
     tax: taxValue,
     discount: discountValue,

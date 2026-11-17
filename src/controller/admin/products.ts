@@ -398,7 +398,6 @@ export const getProduct = async (
             quantity: variantQuantityMap[price._id.toString()] ?? 0,
             variations: variationsArray,
             taxId: variantPricing.taxId,
-            taxesId: variantPricing.taxesId,
             discountId: variantPricing.discountId,
             tax: variantPricing.tax,
             discount: variantPricing.discount,
@@ -417,10 +416,11 @@ export const getProduct = async (
         applyIn,
       });
 
+      const { taxesId: _omittedTaxesId, ...productRest } = product as any;
+
       return {
-        ...product,
+        ...productRest,
         taxId: productPricing.taxId,
-        taxesId: productPricing.taxesId,
         discountId: productPricing.discountId,
         tax: productPricing.tax,
         discount: productPricing.discount,
@@ -533,7 +533,6 @@ export const getOneProduct = async (
         quantity: variantQuantityMap[price._id.toString()] ?? 0,
         variations: variationsArray,
         taxId: variantPricing.taxId,
-        taxesId: variantPricing.taxesId,
         discountId: variantPricing.discountId,
         tax: variantPricing.tax,
         discount: variantPricing.discount,
@@ -552,11 +551,12 @@ export const getOneProduct = async (
     applyIn,
   });
 
+  const { taxesId: _omittedTaxesId, ...productRest } = product as any;
+
   SuccessResponse(res, {
     product: {
-      ...product,
+      ...productRest,
       taxId: productPricing.taxId,
-      taxesId: productPricing.taxesId,
       discountId: productPricing.discountId,
       tax: productPricing.tax,
       discount: productPricing.discount,

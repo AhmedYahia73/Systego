@@ -11,33 +11,102 @@ import { DiscountModel } from "../../models/schema/admin/Discount";
 import { ProductSalesModel } from "../../models/schema/admin/POS/Sale";
 import { OrderModel } from "../../models/schema/users/Order";
 import { CategoryModel } from "../../models/schema/admin/category";
+import { calculateProductPricing } from "../../utils/producthelper";
 
-/** Builds a MongoDB aggregation expression that applies activeDiscount to a price field. */
-const buildDiscountedPriceExpr = (priceField: string) => ({
-  $cond: {
-    if: { $gt: ["$activeDiscount", null] },
-    then: {
-      $cond: {
-        if: { $eq: ["$activeDiscount.type", "percentage"] },
-        then: {
-          $max: [
-            {
-              $subtract: [
-                priceField,
-                { $multiply: [priceField, "$activeDiscount.amount"] },
-              ],
-            },
-            0,
-          ],
-        },
-        else: {
-          $max: [{ $subtract: [priceField, "$activeDiscount.amount"] }, 0],
-        },
-      },
-    },
-    else: priceField,
-  },
-});
+export const formatStoreProduct = (
+  product: any,
+  onlineWarehouseIds: mongoose.Types.ObjectId[] | any[],
+) => {
+  if (!product) return product;
+
+  const rawTax = product.rawTaxDoc || product.activeTax || product.taxId;
+  const rawDiscount =
+    product.rawDiscountDoc || product.activeDiscount || product.discountId;
+
+  const hasVariations =
+    (Array.isArray(product.prices) && product.prices.length > 0) ||
+    (Array.isArray(product.variations) &&
+      product.variations.some(
+        (v: any) => Array.isArray(v.options) && v.options.length > 0,
+      ));
+
+  const basePrice = product.price ?? product.main_price ?? 0;
+
+  const productPricing = calculateProductPricing({
+    basePrice,
+    taxDoc: rawTax,
+    discountDoc: rawDiscount,
+    hasVariations,
+    isOption: false,
+    warehouseId: onlineWarehouseIds,
+    applyIn: "E-commerce",
+  });
+
+  const formattedVariations = Array.isArray(product.variations)
+    ? product.variations.map((v: any) => ({
+        _id: v._id,
+        name: v.name,
+        ar_name: v.ar_name,
+        options: Array.isArray(v.options)
+          ? v.options.map((opt: any) => {
+              const optPricing = calculateProductPricing({
+                basePrice: opt.price ?? 0,
+                taxDoc: rawTax,
+                discountDoc: rawDiscount,
+                hasVariations: true,
+                isOption: true,
+                warehouseId: onlineWarehouseIds,
+                applyIn: "E-commerce",
+              });
+
+              const { taxesId: _noOptTaxesId, ...optRest } = opt;
+
+              return {
+                ...optRest,
+                price: opt.price ?? 0,
+                taxId: optPricing.taxId,
+                discountId: optPricing.discountId,
+                tax: optPricing.tax,
+                discount: optPricing.discount,
+                final_price: optPricing.final_price,
+              };
+            })
+          : [],
+      }))
+    : [];
+
+  const {
+    taxesId: _noTaxesId,
+    rawTaxDoc: _noRawTax,
+    rawDiscountDoc: _noRawDisc,
+    activeTax: _noActiveTax,
+    activeDiscount: _noActiveDisc,
+    taxData: _noTaxData,
+    discountData: _noDiscData,
+    prices: _noPrices,
+    _skus: _noSkus,
+    variantStocks: _noVarStocks,
+    variantStocksRaw: _noVarStocksRaw,
+    brandData: _noBrandData,
+    categoryData: _noCatData,
+    priceOptions: _noPriceOpt,
+    rawOptions: _noRawOpt,
+    rawVariations: _noRawVar,
+    ...rest
+  } = product;
+
+  return {
+    ...rest,
+    main_price: basePrice,
+    price: basePrice,
+    taxId: productPricing.taxId,
+    discountId: productPricing.discountId,
+    tax: productPricing.tax,
+    discount: productPricing.discount,
+    final_price: productPricing.final_price,
+    variations: formattedVariations,
+  };
+};
 
 export const buildProductAggregationPipeline = (
   productMatchStage: object,
@@ -118,7 +187,18 @@ export const buildProductAggregationPipeline = (
     // Only keep products with at least one online category left
     { $match: { "categoryData.0": { $exists: true } } },
 
-    // 2️⃣ Discount
+    // 2️⃣ Taxes
+    {
+      $lookup: {
+        from: "taxes",
+        localField: "taxesId",
+        foreignField: "_id",
+        as: "taxData",
+      },
+    },
+    { $unwind: { path: "$taxData", preserveNullAndEmptyArrays: true } },
+
+    // 3️⃣ Discount
     {
       $lookup: {
         from: "discounts",
@@ -129,14 +209,20 @@ export const buildProductAggregationPipeline = (
     },
     { $unwind: { path: "$discountData", preserveNullAndEmptyArrays: true } },
 
-    // 3️⃣ A discount only counts as active if status is true AND it's
-    // scoped to E-commerce — previously this just checked existence,
-    // so disabled or POS-only discounts were still applied online.
-    // ⚠️ Field names ("status", "applyIn") and the value "E-commerce"
-    // are inferred from the original comment — confirm against the
-    // actual DiscountModel schema before relying on this.
     {
       $addFields: {
+        activeTax: {
+          $cond: {
+            if: {
+              $and: [
+                { $gt: ["$taxData", null] },
+                { $eq: ["$taxData.status", true] },
+              ],
+            },
+            then: "$taxData",
+            else: null,
+          },
+        },
         activeDiscount: {
           $cond: {
             if: {
@@ -144,6 +230,24 @@ export const buildProductAggregationPipeline = (
                 { $gt: ["$discountData", null] },
                 { $eq: ["$discountData.status", true] },
                 { $eq: ["$discountData.applyIn", "E-commerce"] },
+                {
+                  $or: [
+                    { $eq: ["$discountData.all_warehouses", true] },
+                    {
+                      $gt: [
+                        {
+                          $size: {
+                            $setIntersection: [
+                              { $ifNull: ["$discountData.warehouse_ids", []] },
+                              onlineWarehouseIds,
+                            ],
+                          },
+                        },
+                        0,
+                      ],
+                    },
+                  ],
+                },
               ],
             },
             then: "$discountData",
@@ -247,25 +351,41 @@ export const buildProductAggregationPipeline = (
         ar_description: "$ar_description",
         image: "$image",
         gallery_product: "$gallery_product",
-        main_price: "$price",
+        main_price: { $ifNull: ["$price", 0] },
+        price: { $ifNull: ["$price", 0] },
         is_featured: { $ifNull: ["$is_featured", false] },
         show_quantity: { $ifNull: ["$show_quantity", false] },
 
-        // 4️⃣ Discounted price for the main price
-        final_price: buildDiscountedPriceExpr("$price"),
+        taxId: {
+          $cond: {
+            if: { $gt: ["$activeTax", null] },
+            then: {
+              _id: "$activeTax._id",
+              name: "$activeTax.name",
+              ar_name: "$activeTax.ar_name",
+              amount: "$activeTax.amount",
+              type: "$activeTax.type",
+            },
+            else: null,
+          },
+        },
 
-        discount: {
+        discountId: {
           $cond: {
             if: { $gt: ["$activeDiscount", null] },
             then: {
               _id: "$activeDiscount._id",
               name: "$activeDiscount.name",
-              type: "$activeDiscount.type",
+              ar_name: "$activeDiscount.ar_name",
               amount: "$activeDiscount.amount",
+              type: "$activeDiscount.type",
             },
             else: null,
           },
         },
+
+        rawTaxDoc: "$activeTax",
+        rawDiscountDoc: "$activeDiscount",
 
         // Defaults to 0 for products with no stock rows in any online
         // warehouse — they're still shown, not dropped. Add
@@ -292,6 +412,8 @@ export const buildProductAggregationPipeline = (
             else: null,
           },
         },
+
+        prices: "$prices",
 
         variations: {
           $map: {
@@ -350,6 +472,32 @@ export const buildProductAggregationPipeline = (
                                 { $ifNull: ["$price", 0] },
                               ],
                             },
+                            taxId: {
+                              $cond: {
+                                if: { $gt: ["$activeTax", null] },
+                                then: {
+                                  _id: "$activeTax._id",
+                                  name: "$activeTax.name",
+                                  ar_name: "$activeTax.ar_name",
+                                  amount: "$activeTax.amount",
+                                  type: "$activeTax.type",
+                                },
+                                else: null,
+                              },
+                            },
+                            discountId: {
+                              $cond: {
+                                if: { $gt: ["$activeDiscount", null] },
+                                then: {
+                                  _id: "$activeDiscount._id",
+                                  name: "$activeDiscount.name",
+                                  ar_name: "$activeDiscount.ar_name",
+                                  amount: "$activeDiscount.amount",
+                                  type: "$activeDiscount.type",
+                                },
+                                else: null,
+                              },
+                            },
                           },
                         ],
                       },
@@ -404,11 +552,32 @@ export const getAllProducts = asyncHandler(
 
     const productsWithStatus = await ProductModel.aggregate(pipeline);
 
+    const formattedProducts = productsWithStatus.map((p: any) =>
+      formatStoreProduct(p, onlineWarehouseIds),
+    );
+
+    const { page, limit } = req.query as { page?: string; limit?: string };
+    let finalData = formattedProducts;
+    let paginationMeta: any = {};
+
+    if (page || limit) {
+      const limitNum = Math.max(1, parseInt(limit || "12", 10) || 12);
+      const pageNum = Math.max(1, parseInt(page || "1", 10) || 1);
+      const startIndex = (pageNum - 1) * limitNum;
+      finalData = formattedProducts.slice(startIndex, startIndex + limitNum);
+      paginationMeta = {
+        total: formattedProducts.length,
+        page: pageNum,
+        limit: limitNum,
+      };
+    }
+
     return SuccessResponse(
       res,
       {
         message: "All products retrieved successfully",
-        data: productsWithStatus,
+        ...paginationMeta,
+        data: finalData,
       },
       200,
     );
@@ -453,11 +622,16 @@ export const getProductById = asyncHandler(
       throw new NotFound("Product not found");
     }
 
+    const formattedProduct = formatStoreProduct(
+      product[0],
+      onlineWarehouseIds,
+    );
+
     return SuccessResponse(
       res,
       {
         message: "Product retrieved successfully",
-        data: product[0],
+        data: formattedProduct,
       },
       200,
     );
@@ -674,8 +848,9 @@ export const getBestSellingProducts = asyncHandler(
 
     const products = await ProductModel.aggregate(pipeline);
 
-    // 7️⃣ Attach sales metrics to each product
+    // 7️⃣ Attach sales metrics to each product and format pricing
     const productsWithSales = products.map((product: any) => {
+      const formatted = formatStoreProduct(product, onlineWarehouseIds);
       const stats = salesMap.get(product._id.toString()) || {
         totalSoldQuantity: 0,
         posQuantity: 0,
@@ -687,7 +862,7 @@ export const getBestSellingProducts = asyncHandler(
       };
 
       return {
-        ...product,
+        ...formatted,
         sales_stats: {
           total_sold_quantity: stats.totalSoldQuantity,
           pos_sold_quantity: stats.posQuantity,
@@ -791,6 +966,9 @@ export const getProductsByCategory = asyncHandler(
     pipeline.push({ $sort: { created_at: -1 } });
 
     const products = await ProductModel.aggregate(pipeline);
+    const formattedProducts = products.map((p: any) =>
+      formatStoreProduct(p, onlineWarehouseIds),
+    );
 
     return SuccessResponse(
       res,
@@ -801,8 +979,8 @@ export const getProductsByCategory = asyncHandler(
           name: category.name,
           ar_name: category.ar_name,
         },
-        total: products.length,
-        data: products,
+        total: formattedProducts.length,
+        data: formattedProducts,
       },
       200,
     );

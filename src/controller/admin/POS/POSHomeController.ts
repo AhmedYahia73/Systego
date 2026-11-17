@@ -173,7 +173,6 @@ const buildWarehouseProductList = async (
           quantity: stockByVariant[v._id.toString()] ?? 0,
           attributes,
           taxId: variantPricing.taxId,
-          taxesId: variantPricing.taxesId,
           discountId: variantPricing.discountId,
           tax: variantPricing.tax,
           discount: variantPricing.discount,
@@ -219,7 +218,6 @@ const buildWarehouseProductList = async (
         // Stock scoped to the selected warehouse (0 if not present).
         quantity: stockByProduct[product._id.toString()] ?? 0,
         taxId: productPricing.taxId,
-        taxesId: productPricing.taxesId,
         discountId: productPricing.discountId,
         tax: productPricing.tax,
         discount: productPricing.discount,
@@ -432,7 +430,6 @@ export const getActiveBundles = async (req: Request, res: Response) => {
                 quantity: v.quantity,
                 options: options.map((o: any) => o.option_id),
                 taxId: variantPricing.taxId,
-                taxesId: variantPricing.taxesId,
                 discountId: variantPricing.discountId,
                 tax: variantPricing.tax,
                 discount: variantPricing.discount,
@@ -454,10 +451,11 @@ export const getActiveBundles = async (req: Request, res: Response) => {
             applyIn: "POS",
           });
 
+          const { taxesId: _omittedTaxesId, ...productRest } = product as any;
+
           const productWithPricing = {
-            ...product,
+            ...productRest,
             taxId: productPricing.taxId,
-            taxesId: productPricing.taxesId,
             discountId: productPricing.discountId,
             tax: productPricing.tax,
             discount: productPricing.discount,
