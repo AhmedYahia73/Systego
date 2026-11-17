@@ -33,6 +33,10 @@ import bcrypt from "bcryptjs";
 import { Product_WarehouseModel } from "../../../models/schema/admin/Product_Warehouse";
 import { ServiceFeeModel } from "../../../models/schema/admin/ServiceFee";
 import { CashierModel } from "../../../models/schema/admin/cashier";
+import {
+  calculateLineItemPricing,
+  isDiscountApplicable,
+} from "../../../utils/producthelper";
 
 // âœ… Dynamic store info - Ø¨ÙŠØ¬ÙŠØ¨ Ø§Ø³Ù… Ø§Ù„Ø¨Ø±Ø§Ù†Ø¯ Ù…Ù† Ø§Ù„Ø³ÙˆØ¨Ø± Ø£Ø¯Ù…Ù† (ØµØ§Ø­Ø¨ Ø§Ù„Ø¨Ø²Ù†Ø³)
 const getStoreInfo = async (userId: string) => {
@@ -326,14 +330,17 @@ export const createSale = async (req: Request, res: Response) => {
         product_id,
         product_price_id,
         quantity,
-        discount: lineDiscount = 0,
-        discount_type: lineDiscountType = "fixed",
+        discount: lineDiscount,
+        discount_type: lineDiscountType,
+        tax: lineTax,
+        tax_type: lineTaxType,
       } = p;
-      const qty = Number(quantity); // âœ… FIX #5
+      const qty = Number(quantity); // ✅ FIX #5
 
       let finalPrice = 0;
       let originalPrice = 0;
       let isWholesale = false;
+      let productDoc: any = null;
 
       if (product_price_id) {
         const priceDoc = await ProductPriceModel.findById(product_price_id);
@@ -345,10 +352,13 @@ export const createSale = async (req: Request, res: Response) => {
         finalPrice = originalPrice;
 
         if (product_id) {
-          const product = await ProductModel.findById(product_id);
-          if (product) {
-            const minQty = product.start_quantaty || 0;
-            const wholesalePrice = product.whole_price;
+          productDoc = await ProductModel.findById(product_id)
+            .populate("taxesId")
+            .populate("discountId")
+            .lean();
+          if (productDoc) {
+            const minQty = productDoc.start_quantaty || 0;
+            const wholesalePrice = productDoc.whole_price;
 
             if (
               wholesalePrice &&
@@ -356,7 +366,7 @@ export const createSale = async (req: Request, res: Response) => {
               minQty > 0 &&
               qty >= minQty
             ) {
-              const discountRatio = wholesalePrice / (product.price || 1);
+              const discountRatio = wholesalePrice / (productDoc.price || 1);
               finalPrice =
                 Math.round(originalPrice * discountRatio * 100) / 100;
               isWholesale = true;
@@ -364,16 +374,19 @@ export const createSale = async (req: Request, res: Response) => {
           }
         }
       } else if (product_id) {
-        const product = await ProductModel.findById(product_id);
-        if (!product) {
+        productDoc = await ProductModel.findById(product_id)
+          .populate("taxesId")
+          .populate("discountId")
+          .lean();
+        if (!productDoc) {
           throw new NotFound(`Product ${product_id} not found`);
         }
 
-        originalPrice = product.price || 0;
+        originalPrice = productDoc.price || 0;
         finalPrice = originalPrice;
 
-        const minQtyForWholesale = product.start_quantaty || 0;
-        const wholesalePrice = product.whole_price;
+        const minQtyForWholesale = productDoc.start_quantaty || 0;
+        const wholesalePrice = productDoc.whole_price;
 
         if (
           wholesalePrice &&
@@ -381,9 +394,7 @@ export const createSale = async (req: Request, res: Response) => {
           minQtyForWholesale > 0 &&
           qty >= minQtyForWholesale
         ) {
-          // âœ… FIX #4: same ratio formula as the variation branch (collapses
-          // to finalPrice = wholesalePrice here since originalPrice === product.price)
-          const discountRatio = wholesalePrice / (product.price || 1);
+          const discountRatio = wholesalePrice / (productDoc.price || 1);
           finalPrice = Math.round(originalPrice * discountRatio * 100) / 100;
           isWholesale = true;
         }
@@ -394,17 +405,63 @@ export const createSale = async (req: Request, res: Response) => {
         originalPrice = finalPrice;
       }
 
-      let appliedDiscount = 0;
-      if (Number(lineDiscount) > 0) {
-        if (lineDiscountType === "percentage") {
-          appliedDiscount = finalPrice * (Number(lineDiscount) / 100);
+      // Resolve Tax: from item payload if provided, otherwise from product doc
+      let resolvedTaxRate =
+        lineTax !== undefined && lineTax !== null ? Number(lineTax) : null;
+      let resolvedTaxType = (lineTaxType || "percentage") as
+        | "percentage"
+        | "fixed";
+
+      if (resolvedTaxRate === null) {
+        if (productDoc?.taxesId && productDoc.taxesId.status === true) {
+          resolvedTaxRate = Number(productDoc.taxesId.amount) || 0;
+          resolvedTaxType = (productDoc.taxesId.type || "percentage") as
+            | "percentage"
+            | "fixed";
         } else {
-          appliedDiscount = Number(lineDiscount);
+          resolvedTaxRate = 0;
         }
-        finalPrice = Math.max(0, finalPrice - appliedDiscount);
       }
 
-      const finalSubtotal = finalPrice * qty;
+      // Resolve Discount: from item payload if provided, otherwise from product doc
+      let resolvedDiscountRate =
+        lineDiscount !== undefined && lineDiscount !== null
+          ? Number(lineDiscount)
+          : null;
+      let resolvedDiscountType = (lineDiscountType || "fixed") as
+        | "percentage"
+        | "fixed";
+
+      if (resolvedDiscountRate === null) {
+        if (
+          productDoc?.discountId &&
+          isDiscountApplicable(productDoc.discountId, {
+            applyIn: "POS",
+            warehouseId,
+          })
+        ) {
+          resolvedDiscountRate = Number(productDoc.discountId.amount) || 0;
+          resolvedDiscountType = (productDoc.discountId.type || "fixed") as
+            | "percentage"
+            | "fixed";
+        } else {
+          resolvedDiscountRate = 0;
+        }
+      }
+
+      const hasVariations = !!product_price_id;
+
+      const pricing = calculateLineItemPricing({
+        basePrice: finalPrice,
+        hasVariations,
+        taxRate: resolvedTaxRate,
+        taxType: resolvedTaxType,
+        discountRate: resolvedDiscountRate,
+        discountType: resolvedDiscountType,
+      });
+
+      finalPrice = pricing.finalPrice;
+      const finalSubtotal = roundCurrency(finalPrice * qty);
 
       processedProducts.push({
         product_id: p.product_id,
@@ -413,8 +470,12 @@ export const createSale = async (req: Request, res: Response) => {
         price: finalPrice,
         subtotal: finalSubtotal,
         original_price: originalPrice,
-        discount: Number(lineDiscount),
-        discount_type: lineDiscountType,
+        discount: resolvedDiscountRate,
+        discount_type: resolvedDiscountType,
+        tax: resolvedTaxRate,
+        tax_type: resolvedTaxType,
+        unit_tax: pricing.unitTax,
+        unit_discount: pricing.unitDiscount,
         is_wholesale: isWholesale,
         options_id: p.options_id,
         isGift: p.isGift,
@@ -440,8 +501,10 @@ export const createSale = async (req: Request, res: Response) => {
         quantity,
         selected_variations,
         isGift,
-        discount: lineDiscount = 0,
-        discount_type: lineDiscountType = "fixed",
+        discount: lineDiscount,
+        discount_type: lineDiscountType,
+        tax: lineTax,
+        tax_type: lineTaxType,
       } = b;
       const qty = Number(quantity); // âœ… FIX #5
 
@@ -526,27 +589,43 @@ export const createSale = async (req: Request, res: Response) => {
       }
 
       let finalBundlePrice = bundleDoc.price;
-      let appliedDiscount = 0;
+      const resolvedTaxRate =
+        lineTax !== undefined && lineTax !== null ? Number(lineTax) : 0;
+      const resolvedTaxType = (lineTaxType || "percentage") as
+        | "percentage"
+        | "fixed";
+      const resolvedDiscountRate =
+        lineDiscount !== undefined && lineDiscount !== null
+          ? Number(lineDiscount)
+          : 0;
+      const resolvedDiscountType = (lineDiscountType || "fixed") as
+        | "percentage"
+        | "fixed";
 
-      if (Number(lineDiscount) > 0) {
-        if (lineDiscountType === "percentage") {
-          appliedDiscount = finalBundlePrice * (Number(lineDiscount) / 100);
-        } else {
-          appliedDiscount = Number(lineDiscount);
-        }
-        finalBundlePrice = Math.max(0, finalBundlePrice - appliedDiscount);
-      }
+      const bundlePricing = calculateLineItemPricing({
+        basePrice: finalBundlePrice,
+        hasVariations: false,
+        taxRate: resolvedTaxRate,
+        taxType: resolvedTaxType,
+        discountRate: resolvedDiscountRate,
+        discountType: resolvedDiscountType,
+      });
 
-      const bundleSubtotal = finalBundlePrice * qty; // âœ… FIX #5
+      finalBundlePrice = bundlePricing.finalPrice;
+      const bundleSubtotal = roundCurrency(finalBundlePrice * qty);
 
       processedBundles.push({
         bundle_id,
-        quantity: qty, // âœ… FIX #5
+        quantity: qty, // ✅ FIX #5
         price: finalBundlePrice,
         subtotal: bundleSubtotal,
         original_price: bundleDoc.price,
-        discount: Number(lineDiscount),
-        discount_type: lineDiscountType,
+        discount: resolvedDiscountRate,
+        discount_type: resolvedDiscountType,
+        tax: resolvedTaxRate,
+        tax_type: resolvedTaxType,
+        unit_tax: bundlePricing.unitTax,
+        unit_discount: bundlePricing.unitDiscount,
         isGift: !!isGift,
         products: bundleProductsProcessed,
       });
@@ -704,21 +783,19 @@ export const createSale = async (req: Request, res: Response) => {
     appliedServiceFees.reduce((sum, fee) => sum + fee.amount, 0),
   );
 
-  // âœ… FIX #2 (schema-confirmed): DiscountModel percentage `amount` is a
-  // FRACTION (0.1 = 10%) â€” subtotal * amount, NOT subtotal * amount / 100.
+  // Discount calculation
   let discountAmount = 0;
   if (discountDoc) {
+    const rate = Number(discountDoc.amount || 0);
     discountAmount =
       discountDoc.type === "percentage"
-        ? roundCurrency(subtotal * Number(discountDoc.amount || 0))
-        : roundCurrency(Number(discountDoc.amount || 0));
+        ? roundCurrency(subtotal * (rate > 1 ? rate / 100 : rate))
+        : roundCurrency(rate);
   } else if (Number(discount) > 0) {
     discountAmount = roundCurrency(Number(discount)); // legacy fallback, flat amount
   }
 
-  // âœ… FIX #1 (schema-confirmed): CouponModel type is "percentage" | "flat",
-  // and its percentage `amount` is a WHOLE NUMBER (10 = 10%) â€” different
-  // convention from Discount/Tax.
+  // Coupon calculation
   let couponAmount = 0;
   if (coupon) {
     couponAmount =
@@ -728,7 +805,6 @@ export const createSale = async (req: Request, res: Response) => {
   }
 
   // Free discount (manual amount sent by the POS as `free_discount`)
-  // It used to be ignored, so it never reached the sale, invoice or reports.
   const requestedFreeDiscount = roundCurrency(
     Math.max(0, Number(free_discount) || 0),
   );
@@ -745,29 +821,46 @@ export const createSale = async (req: Request, res: Response) => {
     discountAmount + appliedFreeDiscount,
   );
 
-  // âœ… FIX #2 (schema-confirmed): TaxesModel follows the SAME fraction
-  // convention as Discount (0.1 = 10%) â€” subtotal * amount, no / 100.
-  // Raw tax_rate fallback stays whole-number based.
-  let taxAmountCalc = 0;
+  // Line item taxes sum from processed products & bundles
+  const lineTaxTotal = roundCurrency(
+    processedProducts.reduce(
+      (sum, p) => sum + (p.isGift ? 0 : (p.unit_tax || 0) * p.quantity),
+      0
+    ) +
+      processedBundles.reduce(
+        (sum, b) => sum + (b.isGift ? 0 : (b.unit_tax || 0) * b.quantity),
+        0
+      )
+  );
+
+  // Order-level tax
+  let orderTaxAmount = 0;
   if (tax) {
-    taxAmountCalc =
+    const rate = Number(tax.amount || 0);
+    orderTaxAmount =
       tax.type === "percentage"
-        ? roundCurrency(subtotal * Number(tax.amount || 0))
-        : roundCurrency(Number(tax.amount || 0));
-  } else {
-    taxAmountCalc = roundCurrency((subtotal * Number(tax_rate)) / 100);
+        ? roundCurrency(subtotal * (rate > 1 ? rate / 100 : rate))
+        : roundCurrency(rate);
+  } else if (Number(tax_rate) > 0) {
+    orderTaxAmount = roundCurrency((subtotal * Number(tax_rate)) / 100);
   }
 
+  // Record total tax for sale: if order-level tax is applied use it, otherwise use sum of line taxes
+  const taxAmountCalc = roundCurrency(
+    orderTaxAmount > 0 ? orderTaxAmount : lineTaxTotal
+  );
+
+  // Since line taxes are already included in line prices & subtotal, only orderTaxAmount is added on top
   const rawGrandTotal =
     subtotal -
     totalDiscountAmount -
     couponAmount -
     requestedGiftCardAmount +
     serviceFeeTotal +
-    taxAmountCalc +
+    orderTaxAmount +
     Number(shipping);
 
-  // âœ… FIX #10: clamp negative totals instead of letting them flow downstream
+  // Clamp negative totals
   const finalGrandTotal = roundCurrency(Math.max(0, rawGrandTotal));
   const finalGrandTotalCents = toCents(finalGrandTotal);
 
@@ -993,6 +1086,8 @@ export const createSale = async (req: Request, res: Response) => {
       original_price: p.original_price,
       discount: p.discount,
       discount_type: p.discount_type,
+      tax: p.tax,
+      tax_type: p.tax_type,
       is_wholesale: p.is_wholesale,
       options_id: p.options_id,
       isGift: !!p.isGift,
@@ -1012,6 +1107,8 @@ export const createSale = async (req: Request, res: Response) => {
       original_price: b.original_price,
       discount: b.discount,
       discount_type: b.discount_type,
+      tax: b.tax,
+      tax_type: b.tax_type,
       options_id: [],
       isGift: !!b.isGift,
       isBundle: true,
@@ -1312,6 +1409,7 @@ export const getSales = async (req: Request, res: Response) => {
           price: null,
           subtotal: null,
           discount: null,
+          tax: null,
           original_price: null,
           product_id: { ...item.product_id, price: null },
           product_price_id: item.product_price_id
@@ -1328,6 +1426,7 @@ export const getSales = async (req: Request, res: Response) => {
           price: null,
           subtotal: null,
           discount: null,
+          tax: null,
           original_price: null,
           bundle_id: { ...item.bundle_id, price: null },
         };
@@ -1577,6 +1676,10 @@ export const getSalePendingById = async (req: Request, res: Response) => {
         quantity: item.quantity,
         price: item.price,
         subtotal: item.subtotal,
+        discount: item.discount,
+        discount_type: item.discount_type,
+        tax: item.tax,
+        tax_type: item.tax_type,
         isGift: !!item.isGift,
       });
     } else {
@@ -1588,6 +1691,10 @@ export const getSalePendingById = async (req: Request, res: Response) => {
         quantity: item.quantity,
         price: item.price,
         subtotal: item.subtotal,
+        discount: item.discount,
+        discount_type: item.discount_type,
+        tax: item.tax,
+        tax_type: item.tax_type,
         isGift: !!item.isGift,
       });
     }

@@ -22,7 +22,7 @@ import { BankAccountModel } from "../../../models/schema/admin/Financial_Account
 import { CurrencyModel } from "../../../models/schema/admin/Currency";
 import { get } from "axios";
 import { PandelModel } from "../../../models/schema/admin/pandels";
-import { buildProductsWithVariations } from "../../../utils/producthelper";
+import { buildProductsWithVariations, calculateProductPricing } from "../../../utils/producthelper";
 import { CountryModel } from "../../../models/schema/admin/Country";
 import { CityModels } from "../../../models/schema/admin/City";
 import { CashierModel } from "../../../models/schema/admin/cashier";
@@ -77,6 +77,8 @@ const buildWarehouseProductList = async (
   const products = await ProductModel.find(productFilter)
     .populate("categoryId", "name ar_name")
     .populate("brandId", "name ar_name")
+    .populate("taxesId")
+    .populate("discountId")
     .lean();
 
   if (products.length === 0) return [];
@@ -109,6 +111,7 @@ const buildWarehouseProductList = async (
         productId: product._id,
       }).lean();
 
+      const hasVariations = variations.length > 0;
       const variationIds = variations.map((v: any) => v._id);
 
       // Join rows connecting each SKU (ProductPrice) to the Option it
@@ -151,6 +154,16 @@ const buildWarehouseProductList = async (
         const attributes: Record<string, string> = {};
         for (const a of attrs) attributes[a.name] = a.value;
 
+        const variantPricing = calculateProductPricing({
+          basePrice: v.price,
+          taxDoc: product.taxesId,
+          discountDoc: product.discountId,
+          hasVariations: true,
+          isOption: true,
+          warehouseId,
+          applyIn: "POS",
+        });
+
         return {
           _id: v._id,
           price: v.price,
@@ -159,6 +172,12 @@ const buildWarehouseProductList = async (
           // Per-variant quantity, scoped to THIS warehouse only.
           quantity: stockByVariant[v._id.toString()] ?? 0,
           attributes,
+          taxId: variantPricing.taxId,
+          taxesId: variantPricing.taxesId,
+          discountId: variantPricing.discountId,
+          tax: variantPricing.tax,
+          discount: variantPricing.discount,
+          final_price: variantPricing.final_price,
         };
       });
 
@@ -178,6 +197,16 @@ const buildWarehouseProductList = async (
       const distinctPrices = new Set(formattedVariations.map((v) => v.price));
       const different_price = distinctPrices.size > 1;
 
+      const productPricing = calculateProductPricing({
+        basePrice: product.price,
+        taxDoc: product.taxesId,
+        discountDoc: product.discountId,
+        hasVariations,
+        isOption: false,
+        warehouseId,
+        applyIn: "POS",
+      });
+
       return {
         _id: product._id,
         name: product.name,
@@ -189,6 +218,12 @@ const buildWarehouseProductList = async (
         variations: formattedVariations,
         // Stock scoped to the selected warehouse (0 if not present).
         quantity: stockByProduct[product._id.toString()] ?? 0,
+        taxId: productPricing.taxId,
+        taxesId: productPricing.taxesId,
+        discountId: productPricing.discountId,
+        tax: productPricing.tax,
+        discount: productPricing.discount,
+        final_price: productPricing.final_price,
       };
     })
   );
@@ -358,7 +393,8 @@ export const getActiveBundles = async (req: Request, res: Response) => {
         (bundle.products || []).map(async (p: any) => {
           // جلب المنتج
           const product = await ProductModel.findById(p.productId)
-            .select("name ar_name image price")
+            .populate("taxesId")
+            .populate("discountId")
             .lean();
 
           if (!product) return null;
@@ -379,18 +415,54 @@ export const getActiveBundles = async (req: Request, res: Response) => {
                 .populate("option_id", "name ar_name")
                 .lean();
 
+              const variantPricing = calculateProductPricing({
+                basePrice: v.price,
+                taxDoc: product.taxesId,
+                discountDoc: product.discountId,
+                hasVariations: true,
+                isOption: true,
+                warehouseId,
+                applyIn: "POS",
+              });
+
               return {
                 _id: v._id,
                 price: v.price,
                 code: v.code,
                 quantity: v.quantity,
                 options: options.map((o: any) => o.option_id),
+                taxId: variantPricing.taxId,
+                taxesId: variantPricing.taxesId,
+                discountId: variantPricing.discountId,
+                tax: variantPricing.tax,
+                discount: variantPricing.discount,
+                final_price: variantPricing.final_price,
               };
             })
           );
 
           const hasVariations = variationsWithOptions.length > 0;
           const isVariationFixed = !!p.productPriceId;
+
+          const productPricing = calculateProductPricing({
+            basePrice: product.price,
+            taxDoc: product.taxesId,
+            discountDoc: product.discountId,
+            hasVariations,
+            isOption: false,
+            warehouseId,
+            applyIn: "POS",
+          });
+
+          const productWithPricing = {
+            ...product,
+            taxId: productPricing.taxId,
+            taxesId: productPricing.taxesId,
+            discountId: productPricing.discountId,
+            tax: productPricing.tax,
+            discount: productPricing.discount,
+            final_price: productPricing.final_price,
+          };
 
           let selectedVariation = null;
           let productPrice = product.price || 0;
@@ -411,7 +483,7 @@ export const getActiveBundles = async (req: Request, res: Response) => {
 
           return {
             productId: p.productId,
-            product: product,
+            product: productWithPricing,
             quantity: p.quantity || 1,
 
             // معلومات الـ Variations

@@ -21,6 +21,7 @@ import { UnitModel } from "../../models/schema/admin/units";
 import { TaxesModel } from "../../models/schema/admin/Taxes";
 import { Product_WarehouseModel } from "../../models/schema/admin/Product_Warehouse";
 import { DiscountModel } from "../../models/schema/admin/Discount";
+import { calculateProductPricing } from "../../utils/producthelper";
 
 export const createProduct = async (req: Request, res: Response) => {
   const {
@@ -296,7 +297,10 @@ export const getProduct = async (
   req: Request,
   res: Response,
 ): Promise<void> => {
-  const { warehouseId } = req.query;
+  const { warehouseId, applyIn } = req.query as {
+    warehouseId?: string;
+    applyIn?: string;
+  };
 
   const productFilter: any = {};
   if (warehouseId) {
@@ -310,8 +314,8 @@ export const getProduct = async (
   const products = await ProductModel.find(productFilter)
     .populate("categoryId")
     .populate("brandId")
-    .populate("taxesId", "_id name")
-    .populate("discountId", "_id name")
+    .populate("taxesId")
+    .populate("discountId")
     .lean();
 
   const variations = await VariationModel.find().lean();
@@ -341,6 +345,8 @@ export const getProduct = async (
       const prices = await ProductPriceModel.find({
         productId: product._id,
       }).lean();
+
+      const hasVariations = prices.length > 0;
 
       const formattedPrices = await Promise.all(
         prices.map(async (price: any) => {
@@ -377,18 +383,48 @@ export const getProduct = async (
             }),
           );
 
+          const variantPricing = calculateProductPricing({
+            basePrice: price.price,
+            taxDoc: product.taxesId,
+            discountDoc: product.discountId,
+            hasVariations: true,
+            isOption: true,
+            warehouseId,
+            applyIn,
+          });
+
           return {
             ...price,
             quantity: variantQuantityMap[price._id.toString()] ?? 0,
             variations: variationsArray,
+            taxId: variantPricing.taxId,
+            taxesId: variantPricing.taxesId,
+            discountId: variantPricing.discountId,
+            tax: variantPricing.tax,
+            discount: variantPricing.discount,
+            final_price: variantPricing.final_price,
           };
         }),
       );
- 
+
+      const productPricing = calculateProductPricing({
+        basePrice: product.price,
+        taxDoc: product.taxesId,
+        discountDoc: product.discountId,
+        hasVariations,
+        isOption: false,
+        warehouseId,
+        applyIn,
+      });
 
       return {
         ...product,
-        taxesId: product.taxesId ?? null, 
+        taxId: productPricing.taxId,
+        taxesId: productPricing.taxesId,
+        discountId: productPricing.discountId,
+        tax: productPricing.tax,
+        discount: productPricing.discount,
+        final_price: productPricing.final_price,
         quantity:
           prices.length === 0 ? simpleProductQuantity : product.quantity,
         totalQuantity,
@@ -407,12 +443,16 @@ export const getOneProduct = async (
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
+  const { warehouseId, applyIn } = req.query as {
+    warehouseId?: string;
+    applyIn?: string;
+  };
 
   const product = await ProductModel.findById(id)
     .populate("categoryId")
     .populate("brandId")
     .populate("taxesId")
-    .populate("discountId", "_id name")
+    .populate("discountId")
     .lean();
 
   if (!product) throw new NotFound("Product not found");
@@ -439,6 +479,8 @@ export const getOneProduct = async (
   const prices = await ProductPriceModel.find({
     productId: product._id,
   }).lean();
+
+  const hasVariations = prices.length > 0;
 
   const formattedPrices = await Promise.all(
     prices.map(async (price: any) => {
@@ -476,17 +518,49 @@ export const getOneProduct = async (
         options: groupedOptions[varName],
       }));
 
+      const variantPricing = calculateProductPricing({
+        basePrice: price.price,
+        taxDoc: product.taxesId,
+        discountDoc: product.discountId,
+        hasVariations: true,
+        isOption: true,
+        warehouseId,
+        applyIn,
+      });
+
       return {
         ...price,
         quantity: variantQuantityMap[price._id.toString()] ?? 0,
         variations: variationsArray,
+        taxId: variantPricing.taxId,
+        taxesId: variantPricing.taxesId,
+        discountId: variantPricing.discountId,
+        tax: variantPricing.tax,
+        discount: variantPricing.discount,
+        final_price: variantPricing.final_price,
       };
     }),
   );
 
+  const productPricing = calculateProductPricing({
+    basePrice: product.price,
+    taxDoc: product.taxesId,
+    discountDoc: product.discountId,
+    hasVariations,
+    isOption: false,
+    warehouseId,
+    applyIn,
+  });
+
   SuccessResponse(res, {
     product: {
       ...product,
+      taxId: productPricing.taxId,
+      taxesId: productPricing.taxesId,
+      discountId: productPricing.discountId,
+      tax: productPricing.tax,
+      discount: productPricing.discount,
+      final_price: productPricing.final_price,
       quantity: prices.length === 0 ? simpleProductQuantity : product.quantity,
       totalQuantity,
       stocks,

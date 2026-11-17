@@ -171,6 +171,12 @@ const productSalesSchema = new Schema(
       enum: ["fixed", "percentage"],
       default: "fixed",
     },
+    tax: { type: Number, default: 0 },
+    tax_type: {
+      type: String,
+      enum: ["fixed", "percentage"],
+      default: "percentage",
+    },
     original_price: { type: Number, default: 0 },
     product_price_id: { type: Schema.Types.ObjectId, ref: "ProductPrice" },
     isGift: { type: Boolean, default: false },
