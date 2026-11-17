@@ -157,7 +157,7 @@ const buildWarehouseProductList = async (
         const variantPricing = calculateProductPricing({
           basePrice: v.price ?? 0,
           taxDoc: product.taxesId,
-          discountDoc: product.discountId,
+          discountDoc: null,
           hasVariations: true,
           isOption: true,
           warehouseId,
@@ -173,9 +173,9 @@ const buildWarehouseProductList = async (
           quantity: stockByVariant[v._id.toString()] ?? 0,
           attributes,
           taxId: variantPricing.taxId,
-          discountId: variantPricing.discountId,
+          discountId: null,
           tax: variantPricing.tax,
-          discount: variantPricing.discount,
+          discount: 0,
           final_price: variantPricing.final_price,
         };
       });
@@ -199,7 +199,7 @@ const buildWarehouseProductList = async (
       const productPricing = calculateProductPricing({
         basePrice: product.price ?? 0,
         taxDoc: product.taxesId,
-        discountDoc: product.discountId,
+        discountDoc: null,
         hasVariations,
         isOption: false,
         warehouseId,
@@ -218,9 +218,9 @@ const buildWarehouseProductList = async (
         // Stock scoped to the selected warehouse (0 if not present).
         quantity: stockByProduct[product._id.toString()] ?? 0,
         taxId: productPricing.taxId,
-        discountId: productPricing.discountId,
+        discountId: null,
         tax: productPricing.tax,
-        discount: productPricing.discount,
+        discount: 0,
         final_price: productPricing.final_price,
       };
     })
@@ -416,7 +416,7 @@ export const getActiveBundles = async (req: Request, res: Response) => {
               const variantPricing = calculateProductPricing({
                 basePrice: v.price ?? 0,
                 taxDoc: product.taxesId,
-                discountDoc: product.discountId,
+                discountDoc: null,
                 hasVariations: true,
                 isOption: true,
                 warehouseId,
@@ -430,9 +430,9 @@ export const getActiveBundles = async (req: Request, res: Response) => {
                 quantity: v.quantity,
                 options: options.map((o: any) => o.option_id),
                 taxId: variantPricing.taxId,
-                discountId: variantPricing.discountId,
+                discountId: null,
                 tax: variantPricing.tax,
-                discount: variantPricing.discount,
+                discount: 0,
                 final_price: variantPricing.final_price,
               };
             })
@@ -444,7 +444,7 @@ export const getActiveBundles = async (req: Request, res: Response) => {
           const productPricing = calculateProductPricing({
             basePrice: product.price ?? 0,
             taxDoc: product.taxesId,
-            discountDoc: product.discountId,
+            discountDoc: null,
             hasVariations,
             isOption: false,
             warehouseId,
@@ -456,9 +456,9 @@ export const getActiveBundles = async (req: Request, res: Response) => {
           const productWithPricing = {
             ...productRest,
             taxId: productPricing.taxId,
-            discountId: productPricing.discountId,
+            discountId: null,
             tax: productPricing.tax,
-            discount: productPricing.discount,
+            discount: 0,
             final_price: productPricing.final_price,
           };
 

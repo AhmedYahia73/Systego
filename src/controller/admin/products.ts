@@ -386,11 +386,11 @@ export const getProduct = async (
           const variantPricing = calculateProductPricing({
             basePrice: price.price ?? 0,
             taxDoc: product.taxesId,
-            discountDoc: product.discountId,
+            discountDoc: null,
             hasVariations: true,
             isOption: true,
             warehouseId,
-            applyIn,
+            applyIn: "POS",
           });
 
           return {
@@ -398,9 +398,9 @@ export const getProduct = async (
             quantity: variantQuantityMap[price._id.toString()] ?? 0,
             variations: variationsArray,
             taxId: variantPricing.taxId,
-            discountId: variantPricing.discountId,
+            discountId: null,
             tax: variantPricing.tax,
-            discount: variantPricing.discount,
+            discount: 0,
             final_price: variantPricing.final_price,
           };
         }),
@@ -409,11 +409,11 @@ export const getProduct = async (
       const productPricing = calculateProductPricing({
         basePrice: product.price ?? 0,
         taxDoc: product.taxesId,
-        discountDoc: product.discountId,
+        discountDoc: null,
         hasVariations,
         isOption: false,
         warehouseId,
-        applyIn,
+        applyIn: "POS",
       });
 
       const { taxesId: _omittedTaxesId, ...productRest } = product as any;
@@ -421,9 +421,9 @@ export const getProduct = async (
       return {
         ...productRest,
         taxId: productPricing.taxId,
-        discountId: productPricing.discountId,
+        discountId: null,
         tax: productPricing.tax,
-        discount: productPricing.discount,
+        discount: 0,
         final_price: productPricing.final_price,
         quantity:
           prices.length === 0 ? simpleProductQuantity : product.quantity,
@@ -521,11 +521,11 @@ export const getOneProduct = async (
       const variantPricing = calculateProductPricing({
         basePrice: price.price ?? 0,
         taxDoc: product.taxesId,
-        discountDoc: product.discountId,
+        discountDoc: null,
         hasVariations: true,
         isOption: true,
         warehouseId,
-        applyIn,
+        applyIn: "POS",
       });
 
       return {
@@ -533,9 +533,9 @@ export const getOneProduct = async (
         quantity: variantQuantityMap[price._id.toString()] ?? 0,
         variations: variationsArray,
         taxId: variantPricing.taxId,
-        discountId: variantPricing.discountId,
+        discountId: null,
         tax: variantPricing.tax,
-        discount: variantPricing.discount,
+        discount: 0,
         final_price: variantPricing.final_price,
       };
     }),
@@ -544,11 +544,11 @@ export const getOneProduct = async (
   const productPricing = calculateProductPricing({
     basePrice: product.price ?? 0,
     taxDoc: product.taxesId,
-    discountDoc: product.discountId,
+    discountDoc: null,
     hasVariations,
     isOption: false,
     warehouseId,
-    applyIn,
+    applyIn: "POS",
   });
 
   const { taxesId: _omittedTaxesId, ...productRest } = product as any;
@@ -557,9 +557,9 @@ export const getOneProduct = async (
     product: {
       ...productRest,
       taxId: productPricing.taxId,
-      discountId: productPricing.discountId,
+      discountId: null,
       tax: productPricing.tax,
-      discount: productPricing.discount,
+      discount: 0,
       final_price: productPricing.final_price,
       quantity: prices.length === 0 ? simpleProductQuantity : product.quantity,
       totalQuantity,

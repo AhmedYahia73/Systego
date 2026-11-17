@@ -423,31 +423,14 @@ export const createSale = async (req: Request, res: Response) => {
         }
       }
 
-      // Resolve Discount: from item payload if provided, otherwise from product doc
-      let resolvedDiscountRate =
+      // Resolve Discount: in POS, discount is ONLY applied if sent by the cashier user in request
+      const resolvedDiscountRate =
         lineDiscount !== undefined && lineDiscount !== null
           ? Number(lineDiscount)
-          : null;
-      let resolvedDiscountType = (lineDiscountType || "fixed") as
+          : 0;
+      const resolvedDiscountType = (lineDiscountType || "fixed") as
         | "percentage"
         | "fixed";
-
-      if (resolvedDiscountRate === null) {
-        if (
-          productDoc?.discountId &&
-          isDiscountApplicable(productDoc.discountId, {
-            applyIn: "POS",
-            warehouseId,
-          })
-        ) {
-          resolvedDiscountRate = Number(productDoc.discountId.amount) || 0;
-          resolvedDiscountType = (productDoc.discountId.type || "fixed") as
-            | "percentage"
-            | "fixed";
-        } else {
-          resolvedDiscountRate = 0;
-        }
-      }
 
       const hasVariations = !!product_price_id;
 
