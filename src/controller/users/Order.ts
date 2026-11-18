@@ -34,6 +34,8 @@ import { NotificationModel } from "../../models/schema/admin/Notfication";
 import { getBostaCreds } from "../../utils/shipping/getBostaCreds";
 import bostaService from "../../services/bosta.service";
 import { syncOrderToExternalPlatform } from "../../utils/externalOrderSync";
+import { ServiceFeeModel } from "../../models/schema/admin/ServiceFee";
+import { calculateProductPricing } from "../../utils/producthelper";
 
 // ═══════════════════════════════════════════════════════════
 // 💵 Helper: احسب الـ markup
@@ -107,10 +109,13 @@ export const createOrder = async (
       cartQuery = { sessionId: String(sessionId).trim() };
     }
 
-    const cart = await CartModel.findOne(cartQuery).populate({
-      path: "cartItems.product",
-      select: "name ar_name free_shipping price discountId",
-    });
+    const cart = await CartModel.findOne(cartQuery)
+      .populate({
+        path: "cartItems.product",
+        select: "name ar_name free_shipping price discountId taxesId",
+        populate: [{ path: "taxesId" }, { path: "discountId" }],
+      })
+      .populate("cartItems.variant");
 
     if (!cart || !cart.cartItems || cart.cartItems.length === 0) {
       throw new BadRequest("Cart is empty");
@@ -190,7 +195,80 @@ export const createOrder = async (
       if (!onlineWarehouse)
         throw new BadRequest("No online warehouse available");
       resolvedWarehouseId = onlineWarehouse._id;
+    }
 
+    // ═══════════════════════════════════════════════════════════
+    // 3.1️⃣ حساب أسعار المنتجات والضرائب (نفس اللوجيك الموحد)
+    // ═══════════════════════════════════════════════════════════
+    const finalItems: any[] = [];
+    let productsTotal = 0;
+    let totalTaxAmount = 0;
+
+    for (const item of cart.cartItems) {
+      const qty = Number(item.quantity) || 1;
+      const productDoc = item.product as any;
+      const variantDoc = item.variant as any;
+      const variantId = variantDoc?._id || item.variant || null;
+
+      const stockUpdate = await Product_WarehouseModel.findOne({
+        productId: productDoc._id,
+        warehouseId: resolvedWarehouseId,
+        productPriceId: variantId || null,
+      });
+      if (!stockUpdate)
+        throw new BadRequest(
+          `Product ${productDoc.name} is not available in the warehouse`,
+        );
+
+      const hasVariations = Boolean(variantId);
+      const basePrice = Number(variantDoc?.price ?? productDoc.price ?? 0);
+
+      const pricing = calculateProductPricing({
+        basePrice,
+        taxDoc: productDoc.taxesId,
+        discountDoc: productDoc.discountId,
+        hasVariations,
+        isOption: hasVariations,
+        warehouseId: resolvedWarehouseId,
+        applyIn: "E-commerce",
+      });
+
+      const effectivePrice = pricing.final_price;
+      productsTotal += effectivePrice * qty;
+      totalTaxAmount += pricing.tax * qty;
+
+      finalItems.push({
+        product: productDoc._id,
+        variant: variantId || undefined,
+        quantity: qty,
+        price: effectivePrice,
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 3.2️⃣ حساب رسوم الخدمة (Service Fees)
+    // ═══════════════════════════════════════════════════════════
+    let totalServiceFee = 0;
+    const activeFees = await ServiceFeeModel.find({
+      module: "online",
+      status: true,
+      $or: [
+        { warehouseId: { $exists: false } },
+        { warehouseId: { $in: [resolvedWarehouseId] } },
+      ],
+    });
+    if (activeFees.length > 0) {
+      activeFees.forEach((fee) => {
+        totalServiceFee +=
+          fee.type === "percentage"
+            ? (productsTotal * fee.amount) / 100
+            : fee.amount;
+      });
+    } else {
+      totalServiceFee = Number(cart.serviceFee || 0);
+    }
+
+    if (orderType === "delivery") {
       let initialShippingCost = 0;
 
       // ═══════════════════════════════════════════════════════════
@@ -345,76 +423,9 @@ export const createOrder = async (
       }
 
       // ═══════════════════════════════════════════════════════════
-      // 3.5️⃣ نحسب productsTotal الأول عشان نحتاجه للـ COD
-      // ═══════════════════════════════════════════════════════════
-      const discountIds = cart.cartItems
-        .map((i: any) => i.product?.discountId)
-        .filter((id: any) => !!id);
-
-      const discounts = discountIds.length
-        ? await DiscountModel.find({
-            _id: { $in: discountIds },
-            status: true,
-            applyIn: "E-commerce",
-          })
-        : [];
-
-      const discountMap = new Map(
-        discounts.map((d: any) => [d._id.toString(), d]),
-      );
-
-      const computeEffectivePrice = (product: any): number => {
-        const basePrice = Number(product.price || 0);
-        const discount = product.discountId
-          ? discountMap.get(product.discountId.toString())
-          : null;
-
-        if (!discount) return basePrice;
-
-        if (discount.type === "percentage") {
-          const discounted = basePrice - basePrice * discount.amount;
-          return Math.max(discounted, 0);
-        }
-
-        return Math.max(basePrice - discount.amount, 0);
-      };
-
-      const finalItems: any[] = [];
-      let recalculatedProductsTotal = 0;
-
-      for (const item of cart.cartItems) {
-        const qty = item.quantity;
-        const variantId = item.variant;
-
-        const stockUpdate = await Product_WarehouseModel.findOne({
-          productId: item.product._id,
-          warehouseId: resolvedWarehouseId,
-          productPriceId: variantId || null,
-        });
-        if (!stockUpdate)
-          throw new BadRequest(
-            `Product ${(item.product as any).name} is not available in the warehouse`,
-          );
-
-        const effectivePrice = computeEffectivePrice(item.product);
-        recalculatedProductsTotal += effectivePrice * qty;
-
-        finalItems.push({
-          product: item.product._id,
-          variant: variantId,
-          quantity: qty,
-          price: effectivePrice,
-        });
-      }
-
-      const productsTotal = recalculatedProductsTotal;
-      const totalTaxAmount = cart.taxAmount || 0;
-      const totalServiceFee = cart.serviceFee || 0;
-
-      // ═══════════════════════════════════════════════════════════
       // ✅ Base amount للـ COD (بدون شحن)
       // ═══════════════════════════════════════════════════════════
-      const baseAmountForCod = productsTotal + totalServiceFee + totalTaxAmount;
+      const baseAmountForCod = productsTotal + totalServiceFee;
 
       // ═══════════════════════════════════════════════════════════
       // 🆕 Bosta Pricing — مع markup + iteration للـ COD
@@ -571,84 +582,6 @@ export const createOrder = async (
         shippingCost = initialShippingCost;
       }
 
-      (cart as any).__finalItems = finalItems;
-      (cart as any).__productsTotal = productsTotal;
-      (cart as any).__totalTaxAmount = totalTaxAmount;
-      (cart as any).__totalServiceFee = totalServiceFee;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // 4️⃣ Prepare items (لو orderType مش delivery)
-    // ═══════════════════════════════════════════════════════════
-    let finalItems: any[] = (cart as any).__finalItems || [];
-    let productsTotal: number = (cart as any).__productsTotal || 0;
-    let totalTaxAmount: number = (cart as any).__totalTaxAmount || 0;
-    let totalServiceFee: number = (cart as any).__totalServiceFee || 0;
-
-    if (orderType !== "delivery" || finalItems.length === 0) {
-      const discountIds = cart.cartItems
-        .map((i: any) => i.product?.discountId)
-        .filter((id: any) => !!id);
-
-      const discounts = discountIds.length
-        ? await DiscountModel.find({
-            _id: { $in: discountIds },
-            status: true,
-            applyIn: "E-commerce",
-          })
-        : [];
-
-      const discountMap = new Map(
-        discounts.map((d: any) => [d._id.toString(), d]),
-      );
-
-      const computeEffectivePrice = (product: any): number => {
-        const basePrice = Number(product.price || 0);
-        const discount = product.discountId
-          ? discountMap.get(product.discountId.toString())
-          : null;
-
-        if (!discount) return basePrice;
-
-        if (discount.type === "percentage") {
-          const discounted = basePrice - basePrice * discount.amount;
-          return Math.max(discounted, 0);
-        }
-
-        return Math.max(basePrice - discount.amount, 0);
-      };
-
-      finalItems = [];
-      let recalculatedProductsTotal = 0;
-
-      for (const item of cart.cartItems) {
-        const qty = item.quantity;
-        const variantId = item.variant;
-
-        const stockUpdate = await Product_WarehouseModel.findOne({
-          productId: item.product._id,
-          warehouseId: resolvedWarehouseId,
-          productPriceId: variantId || null,
-        });
-        if (!stockUpdate)
-          throw new BadRequest(
-            `Product ${(item.product as any).name} is not available in the warehouse`,
-          );
-
-        const effectivePrice = computeEffectivePrice(item.product);
-        recalculatedProductsTotal += effectivePrice * qty;
-
-        finalItems.push({
-          product: item.product._id,
-          variant: variantId,
-          quantity: qty,
-          price: effectivePrice,
-        });
-      }
-
-      productsTotal = recalculatedProductsTotal;
-      totalTaxAmount = cart.taxAmount || 0;
-      totalServiceFee = cart.serviceFee || 0;
     }
 
     // 5️⃣ Final calculations
@@ -668,8 +601,7 @@ export const createOrder = async (
     const totalPrice =
       productsTotal +
       shippingCost +
-      totalServiceFee +
-      totalTaxAmount -
+      totalServiceFee -
       couponDiscount;
 
     // 🆕 خطة التقسيط (اختيار مباشر من العميل — التحصيل من الفرع/الأدمن)

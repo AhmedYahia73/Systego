@@ -13,6 +13,7 @@ import { Product_WarehouseModel } from "../../models/schema/admin/Product_Wareho
 import { AddressModel } from "../../models/schema/users/Address";
 import { SuccessResponse } from "../../utils/response";
 import { NotFound, BadRequest } from "../../Errors";
+import { calculateProductPricing } from "../../utils/producthelper";
 
 /* =========================================================
    Types
@@ -104,22 +105,25 @@ const calculateCartTotals = async (
     const product = item.product as any;
     const variant = item.variant as any;
 
-    const discount = getActiveDiscount(product?.discountId);
-    const basePrice = variant ? variant.price : product?.price || 0;
-    const currentPrice = computeFinalPrice(basePrice, discount);
-    item.price = currentPrice;
+    const basePrice = Number(variant ? variant.price : product?.price || 0);
+    const hasVariations = Boolean(variant);
+
+    const pricing = calculateProductPricing({
+      basePrice,
+      taxDoc: product?.taxesId,
+      discountDoc: product?.discountId,
+      hasVariations,
+      isOption: hasVariations,
+      warehouseId,
+      applyIn: "E-commerce",
+    });
+
+    item.price = pricing.final_price;
 
     if (product?.free_shipping) hasFreeShippingProduct = true;
 
-    if (product?.taxesId?.status) {
-      const tax = product.taxesId;
-      const itemTotal = currentPrice * item.quantity;
-      totalTaxAmount +=
-        tax.type === "percentage"
-          ? (itemTotal * tax.amount) / 100
-          : tax.amount * item.quantity;
-    }
-    totalCartPrice += currentPrice * item.quantity;
+    totalTaxAmount += pricing.tax * item.quantity;
+    totalCartPrice += pricing.final_price * item.quantity;
   }
 
   /* -------- Service Fees -------- */
@@ -358,6 +362,7 @@ export const syncCart = asyncHandler(async (req: Request, res: Response) => {
 
     const product = await ProductModel.findById(productId)
       .populate("discountId")
+      .populate("taxesId")
       .populate("categoryId", "Is_Online");
 
     if (!product) throw new NotFound(`Product not found: ${productId}`);
@@ -516,15 +521,23 @@ export const syncCart = asyncHandler(async (req: Request, res: Response) => {
     }
 
     /* ----- Compute price ----- */
-    const discount = getActiveDiscount((product as any).discountId);
-    const basePrice = variant ? variant.price : (product as any).price || 0;
-    const currentPrice = computeFinalPrice(basePrice, discount);
+    const basePrice = Number(variant ? variant.price : (product as any).price || 0);
+    const hasVariations = Boolean(resolvedVariantId);
+    const pricing = calculateProductPricing({
+      basePrice,
+      taxDoc: (product as any).taxesId,
+      discountDoc: (product as any).discountId,
+      hasVariations,
+      isOption: hasVariations,
+      warehouseId: onlineWarehouseIds,
+      applyIn: "E-commerce",
+    });
 
     validatedItems.push({
       product: productId,
       variant: resolvedVariantId || undefined,
       quantity: quantity,
-      price: currentPrice,
+      price: pricing.final_price,
     });
   }
 

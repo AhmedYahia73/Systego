@@ -80,7 +80,7 @@ cartSchema.pre('save', function (next) {
     }, 0);
 
     // Final total calculation
-    this.totalPriceAfterDiscount = (this.totalCartPrice + this.serviceFee + this.taxAmount) - this.couponDiscount;
+    this.totalPriceAfterDiscount = (this.totalCartPrice + this.serviceFee) - this.couponDiscount;
     if (this.totalPriceAfterDiscount < 0) this.totalPriceAfterDiscount = 0;
   }
   next();
