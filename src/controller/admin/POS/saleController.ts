@@ -37,6 +37,7 @@ import {
   calculateLineItemPricing,
   isDiscountApplicable,
 } from "../../../utils/producthelper";
+import { isValidCustomerId } from "../../../utils/idValidator";
 
 // âœ… Dynamic store info - Ø¨ÙŠØ¬ÙŠØ¨ Ø§Ø³Ù… Ø§Ù„Ø¨Ø±Ø§Ù†Ø¯ Ù…Ù† Ø§Ù„Ø³ÙˆØ¨Ø± Ø£Ø¯Ù…Ù† (ØµØ§Ø­Ø¨ Ø§Ù„Ø¨Ø²Ù†Ø³)
 const getStoreInfo = async (userId: string) => {
@@ -1857,7 +1858,7 @@ export const payDue = async (req: Request, res: Response) => {
 
   const { customer_id, amount, financials } = req.body;
 
-  if (!customer_id || !mongoose.Types.ObjectId.isValid(customer_id)) {
+  if (!customer_id || !isValidCustomerId(customer_id)) {
     throw new BadRequest("Valid customer_id is required");
   }
 
