@@ -116,9 +116,15 @@
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/admin/product` | `GET / POST` | عرض قائمة المنتجات أو إضافة منتج جديد بالنظام. |
-| `/api/admin/product/:id` | `GET / PUT / DELETE` | عرض تفاصيل أو تعديل أو حذف منتج. |
+| `/api/admin/product/:id` | `GET / PUT / DELETE` | عرض تفاصيل أو تعديل أو نقل منتج إلى سلة المحذوفات (Soft Delete). |
+| `/api/admin/product/trash` | `GET` | عرض سلة المحذوفات للمنتجات مع إمكانية البحث والفلترة. |
+| `/api/admin/product/:id/force` | `DELETE` | حذف المنتج وجميع متعلقاته ومخزونه نهائياً (Permanent Delete). |
+| `/api/admin/product/:id/restore` | `POST` | استعادة المنتج من سلة المحذوفات. |
 | `/api/admin/product_warehouse` | `GET / PUT` | متابعة وتعديل كميات المنتج والحد الأدنى بكل مخزن فرعي. |
-| `/api/admin/category` | `GET / POST / PUT / DELETE` | إدارة أقسام المنتجات والهيكل الشجري. |
+| `/api/admin/category` | `GET / POST / PUT / DELETE` | إدارة أقسام المنتجات والهيكل الشجري، وحذف القسم ينقله إلى سلة المحذوفات (Soft Delete). |
+| `/api/admin/category/trash` | `GET` | عرض سلة المحذوفات للأقسام. |
+| `/api/admin/category/:id/force` | `DELETE` | حذف القسم والأقسام التابعة نهائياً (Permanent Delete). |
+| `/api/admin/category/:id/restore` | `POST` | استعادة القسم من سلة المحذوفات. |
 | `/api/admin/brand` | `GET / POST / PUT / DELETE` | إدارة العلامات التجارية. |
 | `/api/admin/units` | `GET / POST / PUT / DELETE` | إدارة وحدات القياس (كيلو، قطعة، إلخ). |
 | `/api/admin/warehouse` | `GET / POST / PUT / DELETE` | إنشاء وإدارة الفروع والمستودعات. |

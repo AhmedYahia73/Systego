@@ -1,11 +1,14 @@
 import { UnauthorizedError } from "../../Errors/";
 import { SuccessResponse } from "../../utils/response";
 import { Request, Response } from "express";
-import {CategoryModel  } from "../../models/schema/admin/category";
+import { CategoryModel } from "../../models/schema/admin/category";
 import { saveBase64Image } from "../../utils/handleImages";
 import { BadRequest } from "../../Errors/BadRequest";
 import { NotFound } from "../../Errors/";
 import { ProductModel } from "../../models/schema/admin/products";
+import { ProductPriceModel, ProductPriceOptionModel } from "../../models/schema/admin/product_price";
+import { Product_WarehouseModel } from "../../models/schema/admin/Product_Warehouse";
+import { WarehouseModel } from "../../models/schema/admin/Warehouse";
 import mongoose from "mongoose";
 import ExcelJS from "exceljs";
 import { ParamsDictionary } from "express-serve-static-core";
@@ -18,7 +21,7 @@ export const createcategory = async (req: Request, res: Response) => {
   
   if (!name) throw new BadRequest("Category name is required");
   
-  const existingCategory = await CategoryModel.findOne({ name, parentId: parentId || null });
+  const existingCategory = await CategoryModel.findOne({ name, parentId: parentId || null, isDeleted: { $ne: true } });
   if (existingCategory) throw new BadRequest("There Another Category Has The Same Name");
 
   let imageUrl = "", bannerUrl = "";
@@ -46,13 +49,14 @@ export const createcategory = async (req: Request, res: Response) => {
 
 
 export const getCategories = async (req: Request, res: Response) => {
-  const categories = await CategoryModel.find({}).populate("parentId", "name").lean();
+  const categories = await CategoryModel.find({ isDeleted: { $ne: true } }).populate("parentId", "name").lean();
   
-  // ✅ احسب العدد الفعلي لكل category
+  // ✅ احسب العدد الفعلي لكل category للمنتجات غير المحذوفة
   const categoriesWithCorrectCount = await Promise.all(
     categories.map(async (cat: any) => {
       const actualProductCount = await ProductModel.countDocuments({ 
-        categoryId: cat._id 
+        categoryId: cat._id,
+        isDeleted: { $ne: true }
       });
       
       return {
@@ -74,13 +78,53 @@ export const getCategories = async (req: Request, res: Response) => {
 export const getCategoryById = async (req: Request, res: Response) => {
   const { id } = req.params;
   if (!id) throw new BadRequest("Category id is required");
-  const category = await CategoryModel.findById(id).populate("parentId", "name");
+  const category = await CategoryModel.findOne({ _id: id, isDeleted: { $ne: true } }).populate("parentId", "name");
   if (!category) throw new NotFound("Category not found");
   const Parent= category.parentId;
   SuccessResponse(res, { message: "get category successfully", category,Parent });
 };
 
 export const deleteCategory = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { force, permanent } = req.query;
+
+  if (force === "true" || permanent === "true") {
+    return forceDeleteCategory(req, res);
+  }
+
+  if (!id) throw new BadRequest("Category id is required");
+
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new BadRequest("Invalid category id");
+
+  const category = await CategoryModel.findOne({ _id: id, isDeleted: { $ne: true } });
+  if (!category) throw new NotFound("Category not found");
+
+  const now = new Date();
+
+  const softDeleteCategoryAndChildren = async (categoryId: string) => {
+    // Soft delete products belonging to this category
+    await ProductModel.updateMany(
+      { categoryId, isDeleted: { $ne: true } },
+      { $set: { isDeleted: true, deletedAt: now } }
+    );
+
+    const children = await CategoryModel.find({ parentId: categoryId, isDeleted: { $ne: true } });
+
+    for (const child of children) {
+      await softDeleteCategoryAndChildren(child._id.toString());
+    }
+
+    await CategoryModel.findByIdAndUpdate(categoryId, {
+      $set: { isDeleted: true, deletedAt: now }
+    });
+  };
+
+  await softDeleteCategoryAndChildren(id);
+
+  SuccessResponse(res, { message: "Category and related items moved to trash successfully" });
+};
+
+export const forceDeleteCategory = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   if (!id) throw new BadRequest("Category id is required");
@@ -91,7 +135,36 @@ export const deleteCategory = async (req: Request, res: Response) => {
   if (!category) throw new NotFound("Category not found");
 
   const deleteCategoryAndChildren = async (categoryId: string) => {
-    await ProductModel.deleteMany({ categoryId });
+    // Delete all products and their related data
+    const products = await ProductModel.find({ categoryId });
+    for (const prod of products) {
+      const stocks = await Product_WarehouseModel.find({ productId: prod._id });
+      for (const stock of stocks) {
+        await WarehouseModel.findByIdAndUpdate(stock.warehouseId, {
+          $inc: {
+            stock_Quantity: -stock.quantity,
+            number_of_products: -1,
+          },
+        });
+      }
+      await Product_WarehouseModel.deleteMany({ productId: prod._id });
+
+      const prices = await ProductPriceModel.find({ productId: prod._id });
+      const priceIds = prices.map((p) => p._id);
+      await ProductPriceOptionModel.deleteMany({
+        product_price_id: { $in: priceIds },
+      });
+      await ProductPriceModel.deleteMany({ productId: prod._id });
+
+      if (prod.image) await deletePhotoFromServer(prod.image).catch(() => {});
+      if (prod.gallery_product && Array.isArray(prod.gallery_product)) {
+        for (const img of prod.gallery_product) {
+          await deletePhotoFromServer(img).catch(() => {});
+        }
+      }
+
+      await ProductModel.findByIdAndDelete(prod._id);
+    }
 
     const children = await CategoryModel.find({ parentId: categoryId });
 
@@ -99,19 +172,80 @@ export const deleteCategory = async (req: Request, res: Response) => {
       await deleteCategoryAndChildren(child._id.toString());
     }
 
+    const catDoc = await CategoryModel.findById(categoryId);
+    if (catDoc?.image) await deletePhotoFromServer(catDoc.image).catch(() => {});
+    if (catDoc?.banner) await deletePhotoFromServer(catDoc.banner).catch(() => {});
+
     await CategoryModel.findByIdAndDelete(categoryId);
   };
 
   await deleteCategoryAndChildren(id);
 
-  SuccessResponse(res, { message: "Category and related data deleted successfully" });
+  SuccessResponse(res, { message: "Category and related data permanently deleted successfully" });
+};
+
+export const getTrashedCategories = async (req: Request, res: Response) => {
+  const categories = await CategoryModel.find({ isDeleted: true })
+    .populate("parentId", "name")
+    .sort({ deletedAt: -1, updatedAt: -1 })
+    .lean();
+
+  const categoriesWithCorrectCount = await Promise.all(
+    categories.map(async (cat: any) => {
+      const actualProductCount = await ProductModel.countDocuments({ 
+        categoryId: cat._id 
+      });
+      
+      return {
+        ...cat,
+        product_quantity: actualProductCount
+      };
+    })
+  );
+
+  SuccessResponse(res, { 
+    message: "Trashed categories retrieved successfully", 
+    categories: categoriesWithCorrectCount 
+  });
+};
+
+export const restoreCategory = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  if (!id) throw new BadRequest("Category id is required");
+
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new BadRequest("Invalid category id");
+
+  const category = await CategoryModel.findOne({ _id: id, isDeleted: true });
+  if (!category) throw new NotFound("Trashed category not found");
+
+  const restoreCategoryAndChildren = async (categoryId: string) => {
+    await CategoryModel.findByIdAndUpdate(categoryId, {
+      $set: { isDeleted: false, deletedAt: null }
+    });
+
+    await ProductModel.updateMany(
+      { categoryId, isDeleted: true },
+      { $set: { isDeleted: false, deletedAt: null } }
+    );
+
+    const children = await CategoryModel.find({ parentId: categoryId, isDeleted: true });
+    for (const child of children) {
+      await restoreCategoryAndChildren(child._id.toString());
+    }
+  };
+
+  await restoreCategoryAndChildren(id);
+
+  const restored = await CategoryModel.findById(id).populate("parentId", "name");
+  SuccessResponse(res, { message: "Category and related items restored successfully", category: restored });
 };
 
 export const updateCategory = async (req: Request, res: Response) => {
   const { id } = req.params;
   if (!id) throw new BadRequest("Category id is required");
 
-  const category = await CategoryModel.findById(id);
+  const category = await CategoryModel.findOne({ _id: id, isDeleted: { $ne: true } });
   if (!category) throw new NotFound("Category not found");
 
   const { name, ar_name, parentId, image, banner, Is_Online, is_featured, order } = req.body;
@@ -238,7 +372,7 @@ export const importCategoriesFromExcel = async (req: Request, res: Response) => 
 
   // خريطة الـ Categories الموجودة
   const categoryMap: { [key: string]: string } = {};
-  const existingCategories = await CategoryModel.find({}).lean();
+  const existingCategories = await CategoryModel.find({ isDeleted: { $ne: true } }).lean();
   existingCategories.forEach((cat: any) => {
     categoryMap[cat.name.toLowerCase()] = cat._id.toString();
   });
@@ -308,21 +442,52 @@ export const importCategoriesFromExcel = async (req: Request, res: Response) => 
 
 
 export const deletemanycategories = async (req: Request, res: Response) => {
-  const { ids } = req.body;
+  const { ids, force, permanent } = req.body;
   
   if (!ids || !Array.isArray(ids) || ids.length === 0) {
     throw new BadRequest("At least one category ID is required");
   }
 
-  // 1️⃣ امسح كل الـ Products اللي تابعة للـ Categories دي
-  const productsResult = await ProductModel.deleteMany({ category_id: { $in: ids } });
-  
-  // 2️⃣ امسح الـ Categories نفسها
-  const categoriesResult = await CategoryModel.deleteMany({ _id: { $in: ids } });
+  if (force === true || permanent === true) {
+    for (const id of ids) {
+      const category = await CategoryModel.findById(id);
+      if (!category) continue;
+      const products = await ProductModel.find({ categoryId: id });
+      for (const prod of products) {
+        const stocks = await Product_WarehouseModel.find({ productId: prod._id });
+        for (const stock of stocks) {
+          await WarehouseModel.findByIdAndUpdate(stock.warehouseId, {
+            $inc: { number_of_products: -1, stock_Quantity: -stock.quantity },
+          });
+        }
+        await Product_WarehouseModel.deleteMany({ productId: prod._id });
+        const prices = await ProductPriceModel.find({ productId: prod._id });
+        const priceIds = prices.map((p) => p._id);
+        await ProductPriceOptionModel.deleteMany({ product_price_id: { $in: priceIds } });
+        await ProductPriceModel.deleteMany({ productId: prod._id });
+        if (prod.image) await deletePhotoFromServer(prod.image).catch(() => {});
+        await ProductModel.findByIdAndDelete(prod._id);
+      }
+      if (category.image) await deletePhotoFromServer(category.image).catch(() => {});
+      if (category.banner) await deletePhotoFromServer(category.banner).catch(() => {});
+      await CategoryModel.findByIdAndDelete(id);
+    }
+    return SuccessResponse(res, { message: "Categories and their products permanently deleted successfully" });
+  }
+
+  // Soft delete
+  const now = new Date();
+  await ProductModel.updateMany(
+    { categoryId: { $in: ids }, isDeleted: { $ne: true } },
+    { $set: { isDeleted: true, deletedAt: now } }
+  );
+  const categoriesResult = await CategoryModel.updateMany(
+    { _id: { $in: ids }, isDeleted: { $ne: true } },
+    { $set: { isDeleted: true, deletedAt: now } }
+  );
 
   SuccessResponse(res, { 
-    message: "Categories and their products deleted successfully",
-    deletedCategories: categoriesResult.deletedCount,
-    deletedProducts: productsResult.deletedCount
+    message: "Categories moved to trash successfully",
+    deletedCategories: categoriesResult.modifiedCount
   });
 };

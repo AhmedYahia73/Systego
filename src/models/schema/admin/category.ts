@@ -11,6 +11,8 @@ const categorySchema = new Schema(
     Is_Online: { type: Boolean, default: true },
     is_featured: { type: Boolean, default: false },
     order: {type: Number, default: 999},
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

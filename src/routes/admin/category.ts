@@ -6,6 +6,9 @@ import {
   getCategories,
   updateCategory,
   deleteCategory,
+  forceDeleteCategory,
+  getTrashedCategories,
+  restoreCategory,
   importCategoriesFromExcel,
   deletemanycategories,
 } from "../../controller/admin/category";
@@ -28,7 +31,15 @@ route.post(
   catchAsync(importCategoriesFromExcel)
 );
 
-route.delete("/",authorizePermissions("category","Delete"),catchAsync(deletemanycategories));
+route.delete("/", authorizePermissions("category", "Delete"), catchAsync(deletemanycategories));
+
+// Trash list
+route.get(
+  "/trash",
+  authorizePermissions("category", "View"),
+  catchAsync(getTrashedCategories)
+);
+
 // CRUD
 route.post(
   "/",
@@ -43,6 +54,18 @@ route.get(
 );
 
 // ✅ Dynamic routes آخراً
+route.post(
+  "/:id/restore",
+  authorizePermissions("category", "Edit"),
+  catchAsync(restoreCategory)
+);
+
+route.delete(
+  "/:id/force",
+  authorizePermissions("category", "Delete"),
+  catchAsync(forceDeleteCategory)
+);
+
 route.get(
   "/:id",
   authorizePermissions("category", "View"),

@@ -114,7 +114,7 @@ export const buildProductAggregationPipeline = (
   onlineWarehouseIds: mongoose.Types.ObjectId[],
 ): mongoose.PipelineStage[] => {
   return [
-    { $match: { ...productMatchStage, Is_Online: true } },
+    { $match: { ...productMatchStage, Is_Online: true, isDeleted: { $ne: true } } },
 
     // Stock, scoped to online warehouses only, grouped per variant.
     // Left join — products with no matching rows keep an empty array
@@ -922,6 +922,7 @@ export const getProductsByCategory = asyncHandler(
     const category = await CategoryModel.findOne({
       _id: id,
       Is_Online: true,
+      isDeleted: { $ne: true },
     }).lean();
 
     if (!category) {

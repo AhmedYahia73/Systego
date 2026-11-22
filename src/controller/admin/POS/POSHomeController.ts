@@ -44,7 +44,7 @@ export const getAllCategorys = async (req: Request, res: Response) => {
   // this only returned categories that already had a product with
   // quantity > 0 in the assigned warehouse — a new or currently-empty
   // category simply never appeared in the POS category list.
-  const category = await CategoryModel.find();
+  const category = await CategoryModel.find({ isDeleted: { $ne: true } });
 
   SuccessResponse(res, { message: "Category list", category });
 };
@@ -74,7 +74,7 @@ const buildWarehouseProductList = async (
   productFilter: any,
   warehouseId: any
 ) => {
-  const products = await ProductModel.find(productFilter)
+  const products = await ProductModel.find({ ...productFilter, isDeleted: { $ne: true } })
     .populate("categoryId", "name ar_name")
     .populate("brandId", "name ar_name")
     .populate("taxesId")
@@ -239,7 +239,7 @@ export const getProductsByCategory = async (req: Request, res: Response) => {
     throw new BadRequest("Warehouse is not assigned to this user");
   }
 
-  const category = await CategoryModel.findById(categoryId);
+  const category = await CategoryModel.findOne({ _id: categoryId, isDeleted: { $ne: true } });
   if (!category) throw new NotFound("Category not found");
 
   // ✅ categoryId هو Array عشان كده نستخدم $in

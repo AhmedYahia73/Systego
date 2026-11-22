@@ -7,6 +7,7 @@ import { SuccessResponse } from "../../utils/response";
 import { BadRequest } from "../../Errors/BadRequest";
 import { NotFound } from "../../Errors/NotFound";
 import { saveBase64Image } from "../../utils/handleImages";
+import { deletePhotoFromServer } from "../../utils/deleteImage";
 import {
   generateBarcodeImage,
   generateEAN13Barcode,
@@ -76,7 +77,7 @@ export const createProduct = async (req: Request, res: Response) => {
       );
     }
 
-    const existingProductWithCode = await ProductModel.findOne({ code });
+    const existingProductWithCode = await ProductModel.findOne({ code, isDeleted: { $ne: true } });
     if (existingProductWithCode) {
       throw new BadRequest("Product code already exists");
     }
@@ -302,7 +303,7 @@ export const getProduct = async (
     applyIn?: string;
   };
 
-  const productFilter: any = {};
+  const productFilter: any = { isDeleted: { $ne: true } };
   if (warehouseId) {
     const productIdsInWarehouse = await Product_WarehouseModel.distinct(
       "productId",
@@ -448,7 +449,7 @@ export const getOneProduct = async (
     applyIn?: string;
   };
 
-  const product = await ProductModel.findById(id)
+  const product = await ProductModel.findOne({ _id: id, isDeleted: { $ne: true } })
     .populate("categoryId")
     .populate("brandId")
     .populate("taxesId")
@@ -605,7 +606,7 @@ export const updateProduct = async (req: Request, res: Response) => {
     Is_Online,
   } = req.body;
 
-  const product = await ProductModel.findById(id);
+  const product = await ProductModel.findOne({ _id: id, isDeleted: { $ne: true } });
   if (!product) throw new NotFound("Product not found");
 
   const hasVariations = Array.isArray(prices) && prices.length > 0;
@@ -821,9 +822,49 @@ export const updateProduct = async (req: Request, res: Response) => {
     product: finalProduct,
   });
 };
-// ==================== حذف منتج ====================
+// ==================== نقل منتج إلى سلة المحذوفات (Soft Delete) ====================
 export const deleteProduct = async (req: Request, res: Response) => {
   const { id } = req.params;
+  const { force, permanent } = req.query;
+
+  if (force === "true" || permanent === "true") {
+    return forceDeleteProduct(req, res);
+  }
+
+  if (!id) throw new BadRequest("Product id is required");
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new BadRequest("Invalid product id");
+
+  const product = await ProductModel.findOne({ _id: id, isDeleted: { $ne: true } });
+  if (!product) throw new NotFound("Product not found");
+
+  product.isDeleted = true;
+  product.deletedAt = new Date();
+  await product.save();
+
+  // Update categories: decrement active product count
+  for (const catId of product.categoryId) {
+    await CategoryModel.findByIdAndUpdate(catId, {
+      $inc: { product_quantity: -1 },
+    });
+  }
+
+  SuccessResponse(res, {
+    message: "Product moved to trash successfully",
+    product: {
+      _id: product._id,
+      name: product.name,
+      isDeleted: product.isDeleted,
+      deletedAt: product.deletedAt,
+    },
+  });
+};
+
+// ==================== حذف منتج نهائياً (Force / Permanent Delete) ====================
+export const forceDeleteProduct = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  if (!id) throw new BadRequest("Product id is required");
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new BadRequest("Invalid product id");
 
   const product = await ProductModel.findById(id);
   if (!product) throw new NotFound("Product not found");
@@ -859,16 +900,126 @@ export const deleteProduct = async (req: Request, res: Response) => {
   });
   await ProductPriceModel.deleteMany({ productId: id });
 
-  // Update categories
-  for (const catId of product.categoryId) {
-    await CategoryModel.findByIdAndUpdate(catId, {
-      $inc: { product_quantity: -1 },
-    });
+  // Update categories only if the product wasn't already soft deleted
+  if (!product.isDeleted) {
+    for (const catId of product.categoryId) {
+      await CategoryModel.findByIdAndUpdate(catId, {
+        $inc: { product_quantity: -1 },
+      });
+    }
+  }
+
+  if (product.image) {
+    await deletePhotoFromServer(product.image).catch(() => {});
+  }
+  if (product.gallery_product && Array.isArray(product.gallery_product)) {
+    for (const img of product.gallery_product) {
+      await deletePhotoFromServer(img).catch(() => {});
+    }
   }
 
   await ProductModel.findByIdAndDelete(id);
   SuccessResponse(res, {
-    message: "Product and all related data deleted successfully",
+    message: "Product permanently deleted successfully",
+  });
+};
+
+// ==================== عرض المنتجات في سلة المحذوفات (Trash List) ====================
+export const getTrashedProducts = async (req: Request, res: Response) => {
+  const { warehouseId, search, page, limit } = req.query as {
+    warehouseId?: string;
+    search?: string;
+    page?: string;
+    limit?: string;
+  };
+
+  const productFilter: any = { isDeleted: true };
+
+  if (search) {
+    productFilter.$or = [
+      { name: { $regex: search, $options: "i" } },
+      { ar_name: { $regex: search, $options: "i" } },
+      { code: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  if (warehouseId) {
+    const productIdsInWarehouse = await Product_WarehouseModel.distinct(
+      "productId",
+      { warehouseId },
+    );
+    productFilter._id = { $in: productIdsInWarehouse };
+  }
+
+  const pageNum = page ? Math.max(1, parseInt(page, 10)) : 1;
+  const limitNum = limit ? Math.max(1, parseInt(limit, 10)) : 0;
+
+  let query = ProductModel.find(productFilter)
+    .populate("categoryId", "name ar_name")
+    .populate("brandId", "name ar_name")
+    .populate("taxesId")
+    .populate("discountId")
+    .sort({ deletedAt: -1, updatedAt: -1 });
+
+  if (limitNum > 0) {
+    query = query.skip((pageNum - 1) * limitNum).limit(limitNum);
+  }
+
+  const [products, total] = await Promise.all([
+    query.lean(),
+    ProductModel.countDocuments(productFilter),
+  ]);
+
+  const productIds = products.map((p) => p._id);
+  const stocks = await Product_WarehouseModel.find({
+    productId: { $in: productIds },
+  })
+    .populate("warehouseId", "name address")
+    .lean();
+
+  const formattedProducts = products.map((product: any) => {
+    const productStocks = stocks.filter(
+      (s: any) => String(s.productId) === String(product._id),
+    );
+    const totalQuantity = productStocks.reduce(
+      (sum: number, s: any) => sum + s.quantity,
+      0,
+    );
+    return { ...product, totalQuantity, stocks: productStocks };
+  });
+
+  SuccessResponse(res, {
+    message: "Trashed products retrieved successfully",
+    total,
+    page: limitNum > 0 ? pageNum : 1,
+    products: formattedProducts,
+  });
+};
+
+// ==================== استعادة منتج من سلة المحذوفات ====================
+export const restoreProduct = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  if (!id) throw new BadRequest("Product id is required");
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new BadRequest("Invalid product id");
+
+  const product = await ProductModel.findOne({ _id: id, isDeleted: true });
+  if (!product) throw new NotFound("Trashed product not found");
+
+  product.isDeleted = false;
+  product.deletedAt = null;
+  await product.save();
+
+  // Restore category active count
+  for (const catId of product.categoryId) {
+    await CategoryModel.findByIdAndUpdate(catId, {
+      $inc: { product_quantity: 1 },
+    });
+  }
+
+  SuccessResponse(res, {
+    message: "Product restored successfully",
+    product,
   });
 };
 
@@ -887,7 +1038,7 @@ export const getProductByCode = async (req: Request, res: Response) => {
   // الحالة الأولى: إذا كانت الكلمة "all"، نرجع كل المنتجات
   // ---------------------------------------------------------
   if (isAll) {
-    const products = await ProductModel.find()
+    const products = await ProductModel.find({ isDeleted: { $ne: true } })
       .populate("categoryId")
       .populate("brandId")
       .populate("taxesId")
@@ -1000,6 +1151,7 @@ export const getProductByCode = async (req: Request, res: Response) => {
   // الحالة الثالثة: دور في Product بالـ Code أو الـ Name
   // ---------------------------------------------------------
   const products = await ProductModel.find({
+    isDeleted: { $ne: true },
     $or: [
       { code: searchTerm }, // بحث دقيق بالكود
       { name: { $regex: searchTerm, $options: "i" } }, // بحث جزئي بالاسم (غير حساس للأحرف)
@@ -1076,7 +1228,7 @@ export const generateProductCode = async (req: Request, res: Response) => {
 };
 
 export const modelsforselect = async (req: Request, res: Response) => {
-  const categories = await CategoryModel.find().lean();
+  const categories = await CategoryModel.find({ isDeleted: { $ne: true } }).lean();
   const brands = await BrandModel.find().lean();
   const variations = await VariationModel.find().lean().populate("options");
   const warehouses = await WarehouseModel.find().lean();
@@ -1320,7 +1472,7 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
 
   // Check existing products
   const existingProducts = await ProductModel.find(
-    {},
+    { isDeleted: { $ne: true } },
     { code: 1, name: 1 },
   ).lean();
   const codeSet = new Set(
@@ -1463,38 +1615,41 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
 };
 
 export const deletemanyproducts = async (req: Request, res: Response) => {
-  const { ids } = req.body;
+  const { ids, force, permanent } = req.body;
   if (!ids || !Array.isArray(ids) || ids.length === 0) {
     throw new BadRequest("At least one product ID is required");
   }
 
-  // Get all products to be deleted
-  const products = await ProductModel.find({ _id: { $in: ids } });
-
-  for (const product of products) {
-    // Delete stocks and update warehouses
-    const stocks = await Product_WarehouseModel.find({
-      productId: product._id,
-    });
-    for (const stock of stocks) {
-      await WarehouseModel.findByIdAndUpdate(stock.warehouseId, {
-        $inc: {
-          number_of_products: -1,
-          stock_Quantity: -stock.quantity,
-        },
-      });
+  if (force === true || permanent === true) {
+    // Hard delete
+    for (const id of ids) {
+      const product = await ProductModel.findById(id);
+      if (!product) continue;
+      const stocks = await Product_WarehouseModel.find({ productId: id });
+      for (const stock of stocks) {
+        await WarehouseModel.findByIdAndUpdate(stock.warehouseId, {
+          $inc: { number_of_products: -1, stock_Quantity: -stock.quantity },
+        });
+      }
+      await Product_WarehouseModel.deleteMany({ productId: id });
+      const prices = await ProductPriceModel.find({ productId: id });
+      const priceIds = prices.map((p) => p._id);
+      await ProductPriceOptionModel.deleteMany({ product_price_id: { $in: priceIds } });
+      await ProductPriceModel.deleteMany({ productId: id });
+      if (!product.isDeleted) {
+        for (const catId of product.categoryId) {
+          await CategoryModel.findByIdAndUpdate(catId, { $inc: { product_quantity: -1 } });
+        }
+      }
+      if (product.image) await deletePhotoFromServer(product.image).catch(() => {});
+      await ProductModel.findByIdAndDelete(id);
     }
-    await Product_WarehouseModel.deleteMany({ productId: product._id });
+    return SuccessResponse(res, { message: "Products permanently deleted successfully" });
+  }
 
-    // Delete prices and options
-    const prices = await ProductPriceModel.find({ productId: product._id });
-    const priceIds = prices.map((p) => p._id);
-    await ProductPriceOptionModel.deleteMany({
-      product_price_id: { $in: priceIds },
-    });
-    await ProductPriceModel.deleteMany({ productId: product._id });
-
-    // Update categories
+  // Soft delete
+  const products = await ProductModel.find({ _id: { $in: ids }, isDeleted: { $ne: true } });
+  for (const product of products) {
     for (const catId of product.categoryId) {
       await CategoryModel.findByIdAndUpdate(catId, {
         $inc: { product_quantity: -1 },
@@ -1502,15 +1657,23 @@ export const deletemanyproducts = async (req: Request, res: Response) => {
     }
   }
 
-  await ProductModel.deleteMany({ _id: { $in: ids } });
-  SuccessResponse(res, { message: "Products deleted successfully" });
+  const result = await ProductModel.updateMany(
+    { _id: { $in: ids }, isDeleted: { $ne: true } },
+    { $set: { isDeleted: true, deletedAt: new Date() } }
+  );
+
+  SuccessResponse(res, {
+    message: "Products moved to trash successfully",
+    deletedCount: result.modifiedCount,
+  });
 };
 
 export const getLowStockProducts = async (req: Request, res: Response) => {
   const { warehouseId } = req.query;
 
-  // Get all products with their low_stock threshold
+  // Get all products with their low_stock threshold (exclude deleted)
   const products = await ProductModel.find({
+    isDeleted: { $ne: true },
     low_stock: { $exists: true, $gt: 0 },
   })
     .select("name ar_name code low_stock image categoryId brandId")

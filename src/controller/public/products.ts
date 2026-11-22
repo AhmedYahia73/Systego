@@ -11,7 +11,7 @@ import { SuccessResponse } from "../../utils/response";
  * - options: array of { option_name, price } (one entry per SKU/variant)
  */
 export const getPublicProducts = async (req: Request, res: Response) => {
-  const products = await ProductModel.find()
+  const products = await ProductModel.find({ isDeleted: { $ne: true } })
     .select("_id ar_name ar_description price")
     .lean();
 
