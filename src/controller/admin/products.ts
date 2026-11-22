@@ -1003,8 +1003,12 @@ export const restoreProduct = async (req: Request, res: Response) => {
   if (!id) throw new BadRequest("Product id is required");
   if (!mongoose.Types.ObjectId.isValid(id)) throw new BadRequest("Invalid product id");
 
-  const product = await ProductModel.findOne({ _id: id, isDeleted: true });
-  if (!product) throw new NotFound("Trashed product not found");
+  const product = await ProductModel.findById(id);
+  if (!product) throw new NotFound("Product not found");
+
+  if (!product.isDeleted) {
+    throw new BadRequest("Product is not in trash (already active)");
+  }
 
   product.isDeleted = false;
   product.deletedAt = null;

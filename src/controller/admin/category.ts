@@ -216,8 +216,12 @@ export const restoreCategory = async (req: Request, res: Response) => {
 
   if (!mongoose.Types.ObjectId.isValid(id)) throw new BadRequest("Invalid category id");
 
-  const category = await CategoryModel.findOne({ _id: id, isDeleted: true });
-  if (!category) throw new NotFound("Trashed category not found");
+  const category = await CategoryModel.findById(id);
+  if (!category) throw new NotFound("Category not found");
+
+  if (!category.isDeleted) {
+    throw new BadRequest("Category is not in trash (already active)");
+  }
 
   const restoreCategoryAndChildren = async (categoryId: string) => {
     await CategoryModel.findByIdAndUpdate(categoryId, {
