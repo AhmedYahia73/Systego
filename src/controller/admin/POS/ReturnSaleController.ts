@@ -24,6 +24,7 @@ import {
   buildBranchFilter,
   buildPosShiftFilter,
 } from "../../../utils/reportFilters";
+import { isValidCustomerId } from "../../../utils/idValidator";
 // ═══════════════════════════════════════════════════════════
 // GET SALE FOR RETURN
 // ═══════════════════════════════════════════════════════════
@@ -694,7 +695,7 @@ export const getAllReturns = async (req: Request, res: Response) => {
     ...buildPosShiftFilter(shiftIds),
   };
 
-  if (customer_id && mongoose.Types.ObjectId.isValid(customer_id as string)) {
+  if (customer_id && isValidCustomerId(customer_id as string)) {
     query.customer_id = customer_id;
   }
 

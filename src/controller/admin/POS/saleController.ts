@@ -37,6 +37,7 @@ import {
   calculateLineItemPricing,
   isDiscountApplicable,
 } from "../../../utils/producthelper";
+import { isValidCustomerId } from "../../../utils/idValidator";
 
 // âœ… Dynamic store info - Ø¨ÙŠØ¬ÙŠØ¨ Ø§Ø³Ù… Ø§Ù„Ø¨Ø±Ø§Ù†Ø¯ Ù…Ù† Ø§Ù„Ø³ÙˆØ¨Ø± Ø£Ø¯Ù…Ù† (ØµØ§Ø­Ø¨ Ø§Ù„Ø¨Ø²Ù†Ø³)
 const getStoreInfo = async (userId: string) => {
@@ -342,11 +343,11 @@ export const createSale = async (req: Request, res: Response) => {
     );
 
   // ✅ customer_id is required if due = 1 or is installments
-  if (isDue && (!customer_id || !String(customer_id).trim())) {
+  if (isDue && (!customer_id || !isValidCustomerId(customer_id))) {
     throw new BadRequest("Customer is required for due sales");
   }
 
-  if (isInstallment && (!customer_id || !String(customer_id).trim())) {
+  if (isInstallment && (!customer_id || !isValidCustomerId(customer_id))) {
     throw new BadRequest("Customer is required for installment sales");
   }
 
@@ -2000,7 +2001,7 @@ export const payDue = async (req: Request, res: Response) => {
   const { customer_id: raw_customer_id, customerId: raw_customerId, amount, financials } = req.body;
   const customer_id = raw_customer_id || raw_customerId;
 
-  if (!customer_id || !String(customer_id).trim()) {
+  if (!customer_id || !isValidCustomerId(customer_id)) {
     throw new BadRequest("Valid customer_id is required");
   }
 

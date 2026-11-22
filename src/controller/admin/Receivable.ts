@@ -7,6 +7,7 @@ import { BankAccountModel } from "../../models/schema/admin/Financial_Account";
 import { SuccessResponse } from "../../utils/response";
 import { BadRequest } from "../../Errors/BadRequest";
 import { NotFound } from "../../Errors/NotFound";
+import { isValidCustomerId } from "../../utils/idValidator";
 
 export const getReceivables = async (req: Request, res: Response) => {
   const jwtUser = req.user as any;
@@ -23,7 +24,7 @@ export const getReceivables = async (req: Request, res: Response) => {
   };
 
   if (customer_id) {
-    if (!mongoose.Types.ObjectId.isValid(String(customer_id))) {
+    if (!isValidCustomerId(String(customer_id))) {
       throw new BadRequest("Invalid customer_id");
     }
     filter.Due_customer_id = customer_id;
@@ -111,7 +112,7 @@ export const addReceivableTransaction = async (req: Request, res: Response) => {
     throw new BadRequest("Warehouse is not assigned to this user");
   }
 
-  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+  if (!id || !isValidCustomerId(id)) {
     throw new BadRequest("Valid customer_id is required");
   }
 
