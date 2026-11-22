@@ -214,7 +214,11 @@ const toCents = (n: number) => Math.round(Number(n) * 100);
 export const createSale = async (req: Request, res: Response) => {
   const jwtUser = req.user as any;
   const cashierId = jwtUser?.id;
-  const warehouseId = jwtUser?.warehouse_id;
+  const warehouseId =
+    jwtUser?.warehouse_id ||
+    req.body?.warehouse_id ||
+    req.body?.warehouseId ||
+    (req.headers["warehouse-id"] as string);
 
   if (!cashierId) {
     throw new BadRequest("Unauthorized: user not found in token");
@@ -236,10 +240,11 @@ export const createSale = async (req: Request, res: Response) => {
   }
 
   const {
-    customer_id,
+    customer_id: raw_customer_id,
+    customerId: raw_customerId,
     order_pending = 0,
     gift_card_id,
-    gift_card_amount = 0, // âœ… FIX #3: explicit amount to apply from the gift card
+    gift_card_amount = 0, // ✅ FIX #3: explicit amount to apply from the gift card
     service_fee_ids = [],
     order_tax,
     order_discount,
@@ -253,10 +258,21 @@ export const createSale = async (req: Request, res: Response) => {
     note,
     financials,
     coupon_code,
-    Due = 0,
-    payment_type = "full", // "full" | "installment"
-    installment, // { months, down_payment?, start_date?, notes? }
+    Due,
+    due,
+    is_due,
+    is_Due,
+    payment_type = "full", // "full" | "installment" | "due"
+    installment,
+    installments,
+    installment_data,
+    is_installment,
+    is_installments,
+    isInstallment: raw_isInstallment,
+    isInstallments: raw_isInstallments,
   } = req.body;
+
+  const customer_id = raw_customer_id || raw_customerId;
 
   const warehouse = await WarehouseModel.findById(warehouseId);
   if (!warehouse) {
@@ -272,8 +288,102 @@ export const createSale = async (req: Request, res: Response) => {
 
   const normalizedOrderPending = Number(order_pending) === 0 ? 0 : 1;
   const isPending = normalizedOrderPending === 1;
-  const isDue = Number(Due) === 1;
-  const isInstallment = String(payment_type) === "installment";
+
+  const rawDue =
+    Due !== undefined
+      ? Due
+      : due !== undefined
+        ? due
+        : is_due !== undefined
+          ? is_due
+          : is_Due !== undefined
+            ? is_Due
+            : payment_type === "due"
+              ? 1
+              : 0;
+
+  const isDue =
+    Number(rawDue) === 1 ||
+    rawDue === true ||
+    String(rawDue).toLowerCase() === "true" ||
+    String(rawDue).toLowerCase() === "due";
+
+  const rawInstallment =
+    installment ||
+    installments ||
+    installment_data;
+
+  const rawIsInstallmentFlag =
+    is_installment !== undefined
+      ? is_installment
+      : is_installments !== undefined
+        ? is_installments
+        : raw_isInstallment !== undefined
+          ? raw_isInstallment
+          : raw_isInstallments;
+
+  const paymentTypeNormalized = String(payment_type || "")
+    .toLowerCase()
+    .trim();
+
+  const isInstallment =
+    paymentTypeNormalized === "installment" ||
+    paymentTypeNormalized === "installments" ||
+    rawIsInstallmentFlag === 1 ||
+    rawIsInstallmentFlag === "1" ||
+    rawIsInstallmentFlag === true ||
+    String(rawIsInstallmentFlag).toLowerCase() === "true" ||
+    Boolean(
+      rawInstallment &&
+        typeof rawInstallment === "object" &&
+        (rawInstallment.months ||
+          rawInstallment.installments_count ||
+          rawInstallment.down_payment !== undefined),
+    );
+
+  // ✅ customer_id is required if due = 1 or is installments
+  if (isDue && (!customer_id || !String(customer_id).trim())) {
+    throw new BadRequest("Customer is required for due sales");
+  }
+
+  if (isInstallment && (!customer_id || !String(customer_id).trim())) {
+    throw new BadRequest("Customer is required for installment sales");
+  }
+
+  const installmentMonths = Number(
+    rawInstallment?.months ||
+      rawInstallment?.installments_count ||
+      req.body.months ||
+      req.body.installments_count ||
+      req.body.installment_months ||
+      (typeof rawInstallment === "number" ? rawInstallment : 0),
+  );
+
+  const installmentDownPayment = Number(
+    rawInstallment?.down_payment ??
+      rawInstallment?.downPayment ??
+      req.body.down_payment ??
+      req.body.downPayment ??
+      0,
+  );
+
+  const installmentStartDate =
+    rawInstallment?.start_date ||
+    rawInstallment?.startDate ||
+    req.body.start_date ||
+    req.body.startDate;
+
+  const installmentNotes =
+    rawInstallment?.notes ||
+    rawInstallment?.note ||
+    req.body.installment_notes ||
+    "";
+
+  if (isInstallment && (!installmentMonths || installmentMonths < 1)) {
+    throw new BadRequest(
+      "Installment months must be a positive integer (e.g. { installment: { months: 6 } })",
+    );
+  }
 
   // âœ… FIX #12: order_pending and Due can't both be true
   if (isPending && isDue) {
@@ -863,11 +973,11 @@ export const createSale = async (req: Request, res: Response) => {
     const settings = await getInstallmentSettings();
     installmentCalculation = calculateInstallmentSchedule({
       total: finalGrandTotal,
-      downPayment: Number(installment?.down_payment || 0),
-      months: Number(installment?.months),
+      downPayment: installmentDownPayment,
+      months: installmentMonths,
       settings: settings as any,
-      startDate: installment?.start_date
-        ? new Date(installment.start_date)
+      startDate: installmentStartDate
+        ? new Date(installmentStartDate)
         : new Date(),
     });
   }
@@ -927,14 +1037,20 @@ export const createSale = async (req: Request, res: Response) => {
         }
       }
     } else if (Array.isArray(financials) && financials.length > 0) {
-      if (isInstallment) {
+      const passedSum = (financials as any[]).reduce(
+        (sum: number, f: any) => sum + (Number(f?.amount) || 0),
+        0,
+      );
+      if (passedSum > 0) {
+        if (isInstallment) {
+          throw new BadRequest(
+            "No down payment is required - do not submit financials for an installment sale with 0 down payment",
+          );
+        }
         throw new BadRequest(
-          "No down payment is required - do not submit financials for an installment sale",
+          "Grand total is 0 — no financials should be submitted for a fully-covered sale",
         );
       }
-      throw new BadRequest(
-        "Grand total is 0 — no financials should be submitted for a fully-covered sale",
-      );
     }
   }
 
@@ -1257,7 +1373,7 @@ export const createSale = async (req: Request, res: Response) => {
         min_down_payment_percent: 0,
       },
       startDate: installmentCalculation.start_date,
-      notes: installment?.notes || "",
+      notes: installmentNotes,
       createdBy: cashierId,
     });
 
@@ -1265,6 +1381,13 @@ export const createSale = async (req: Request, res: Response) => {
     await sale.save();
 
     installmentPlan = serializePlan(createdPlan.plan, createdPlan.items);
+  }
+
+  if (isDue && customer) {
+    await CustomerModel.findByIdAndUpdate(customer._id, {
+      is_Due: true,
+      $inc: { amount_Due: remainingAmount },
+    });
   }
 
   const fullSale = await SaleModel.findById(sale._id)
@@ -1815,13 +1938,28 @@ export const deleteSalePending = async (req: Request, res: Response) => {
 
 export const getDueSales = async (req: Request, res: Response) => {
   const jwtUser = req.user as any;
-  const warehouseId = jwtUser?.warehouse_id;
+  const warehouseId =
+    jwtUser?.warehouse_id ||
+    req.query.warehouse_id ||
+    req.query.warehouseId ||
+    req.headers["warehouse-id"];
 
-  const dueSales = await SaleModel.find({
+  const filter: any = {
     Due: 1,
     remaining_amount: { $gt: 0 },
-    warehouse_id: warehouseId,
-  })
+  };
+
+  if (warehouseId) {
+    if (mongoose.Types.ObjectId.isValid(warehouseId)) {
+      filter.warehouse_id = {
+        $in: [warehouseId, new mongoose.Types.ObjectId(warehouseId)],
+      };
+    } else {
+      filter.warehouse_id = warehouseId;
+    }
+  }
+
+  const dueSales = await SaleModel.find(filter)
     .populate("Due_customer_id", "name email phone_number")
     .populate("customer_id", "name email phone_number")
     .sort({ createdAt: -1 })
@@ -1845,19 +1983,24 @@ export const getDueSales = async (req: Request, res: Response) => {
 export const payDue = async (req: Request, res: Response) => {
   const jwtUser = req.user as any;
   const cashierId = jwtUser?.id;
-  const warehouseId = jwtUser?.warehouse_id;
+  const warehouseId =
+    jwtUser?.warehouse_id ||
+    req.body.warehouse_id ||
+    req.body.warehouseId ||
+    req.headers["warehouse-id"];
 
   if (!cashierId) {
     throw new BadRequest("Unauthorized: user not found in token");
   }
 
-  if (!warehouseId) {
+  if (!warehouseId && jwtUser?.role !== "superadmin") {
     throw new BadRequest("Warehouse is not assigned to this user");
   }
 
-  const { customer_id, amount, financials } = req.body;
+  const { customer_id: raw_customer_id, customerId: raw_customerId, amount, financials } = req.body;
+  const customer_id = raw_customer_id || raw_customerId;
 
-  if (!customer_id || !mongoose.Types.ObjectId.isValid(customer_id)) {
+  if (!customer_id || !String(customer_id).trim()) {
     throw new BadRequest("Valid customer_id is required");
   }
 
@@ -1872,12 +2015,23 @@ export const payDue = async (req: Request, res: Response) => {
     throw new NotFound("Customer not found");
   }
 
-  const dueSales = await SaleModel.find({
+  const dueSalesFilter: any = {
     Due_customer_id: customer_id,
     Due: 1,
     remaining_amount: { $gt: 0 },
-    warehouse_id: warehouseId,
-  }).sort({ createdAt: 1 });
+  };
+
+  if (warehouseId) {
+    if (mongoose.Types.ObjectId.isValid(warehouseId)) {
+      dueSalesFilter.warehouse_id = {
+        $in: [warehouseId, new mongoose.Types.ObjectId(warehouseId)],
+      };
+    } else {
+      dueSalesFilter.warehouse_id = warehouseId;
+    }
+  }
+
+  const dueSales = await SaleModel.find(dueSalesFilter).sort({ createdAt: 1 });
 
   if (dueSales.length === 0) {
     throw new BadRequest("This customer has no pending dues");
@@ -2007,6 +2161,11 @@ export const payDue = async (req: Request, res: Response) => {
     (sum, sale) => sum + (sale.remaining_amount || 0),
     0,
   );
+
+  await CustomerModel.findByIdAndUpdate(customer_id, {
+    is_Due: newTotalDue > 0,
+    amount_Due: newTotalDue,
+  });
 
   return SuccessResponse(res, {
     message:

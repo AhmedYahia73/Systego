@@ -6,6 +6,7 @@ import {
   InstallmentItemModel,
   InstallmentPlanModel,
 } from "../../../models/schema/admin/InstallmentPlan";
+import { CustomerModel } from "../../../models/schema/admin/POS/customer";
 import { collectInstallmentPayment } from "../../../services/installmentPayment.service";
 import {
   calculateInstallmentSchedule,
@@ -16,9 +17,18 @@ import {
 } from "../../../utils/installment";
 import { SuccessResponse } from "../../../utils/response";
 
-const getWarehouseId = (req: Request) => {
-  const warehouseId = (req.user as any)?.warehouse_id;
+const getWarehouseId = (req: Request, required = true): string | undefined => {
+  const user = req.user as any;
+  const warehouseId =
+    user?.warehouse_id ||
+    req.query.warehouse_id ||
+    req.query.warehouseId ||
+    req.headers["warehouse-id"];
+
   if (!warehouseId) {
+    if (user?.role === "superadmin" && !required) {
+      return undefined;
+    }
     throw new BadRequest("Warehouse is not assigned to this user");
   }
   return String(warehouseId);
@@ -79,12 +89,21 @@ export const listPosInstallmentPlans = async (
   req: Request,
   res: Response,
 ) => {
-  const warehouseId = getWarehouseId(req);
-  const { status, customer_id, search, page = 1, limit = 20 } = req.query as any;
+  const warehouseId = getWarehouseId(req, false);
+  const { status, customer_id, customerId, search, page = 1, limit = 20 } = req.query as any;
 
   await markOverdueInstallments();
 
-  const filter: any = { warehouse_id: warehouseId };
+  const filter: any = {};
+  if (warehouseId) {
+    if (mongoose.Types.ObjectId.isValid(warehouseId)) {
+      filter.warehouse_id = {
+        $in: [warehouseId, new mongoose.Types.ObjectId(warehouseId)],
+      };
+    } else {
+      filter.warehouse_id = warehouseId;
+    }
+  }
 
   if (status) {
     if (!["active", "completed", "cancelled"].includes(status)) {
@@ -93,8 +112,9 @@ export const listPosInstallmentPlans = async (
     filter.status = status;
   }
 
-  if (customer_id) {
-    filter.customer_id = String(customer_id).trim();
+  const effectiveCustomerId = customer_id || customerId;
+  if (effectiveCustomerId) {
+    filter.customer_id = String(effectiveCustomerId).trim();
   }
 
   if (search) {
@@ -109,7 +129,7 @@ export const listPosInstallmentPlans = async (
 
   const [plans, total] = await Promise.all([
     InstallmentPlanModel.find(filter)
-      .populate("customer_id", "name phone_number")
+      .populate("customer_id", "name phone_number email")
       .sort({ createdAt: -1 })
       .skip((pageNumber - 1) * pageSize)
       .limit(pageSize)
@@ -131,7 +151,7 @@ export const listPosInstallmentPlans = async (
 // GET /api/admin/pos/installments/plans/:id
 // ══════════════════════════════════════════════════════════════
 export const getPosInstallmentPlan = async (req: Request, res: Response) => {
-  const warehouseId = getWarehouseId(req);
+  const warehouseId = getWarehouseId(req, false);
   const { id } = req.params;
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -140,11 +160,19 @@ export const getPosInstallmentPlan = async (req: Request, res: Response) => {
 
   await markOverdueInstallments(id);
 
-  const plan = await InstallmentPlanModel.findOne({
-    _id: id,
-    warehouse_id: warehouseId,
-  })
-    .populate("customer_id", "name phone_number")
+  const query: any = { _id: id };
+  if (warehouseId) {
+    if (mongoose.Types.ObjectId.isValid(warehouseId)) {
+      query.warehouse_id = {
+        $in: [warehouseId, new mongoose.Types.ObjectId(warehouseId)],
+      };
+    } else {
+      query.warehouse_id = warehouseId;
+    }
+  }
+
+  const plan = await InstallmentPlanModel.findOne(query)
+    .populate("customer_id", "name phone_number email")
     .lean();
 
   if (!plan) throw new NotFound("Installment plan not found");
@@ -167,45 +195,63 @@ export const listPosDueInstallments = async (
   req: Request,
   res: Response,
 ) => {
-  const warehouseId = getWarehouseId(req);
-  const { status, days = 0, customer_id, search } = req.query as any;
+  const warehouseId = getWarehouseId(req, false);
+  const { status, days, customer_id, customerId, search } = req.query as any;
 
   await markOverdueInstallments();
 
+  const effectiveCustomerId = customer_id || customerId;
+
   const planFilter: any = {
-    warehouse_id: warehouseId,
     status: { $in: ["active", "completed"] },
   };
-  if (customer_id) {
-    planFilter.customer_id = String(customer_id).trim();
+
+  if (warehouseId) {
+    if (mongoose.Types.ObjectId.isValid(warehouseId)) {
+      planFilter.warehouse_id = {
+        $in: [warehouseId, new mongoose.Types.ObjectId(warehouseId)],
+      };
+    } else {
+      planFilter.warehouse_id = warehouseId;
+    }
+  }
+
+  if (effectiveCustomerId) {
+    planFilter.customer_id = String(effectiveCustomerId).trim();
   }
 
   const plans = await InstallmentPlanModel.find(planFilter)
     .select(
-      "_id plan_number source total_payable paid_amount remaining_amount down_payment order_total",
+      "_id plan_number source total_payable paid_amount remaining_amount down_payment order_total warehouse_id customer_id",
     )
     .lean();
 
+  const planIds = plans.map((plan: any) => plan._id);
+
   const itemFilter: any = {
-    plan_id: { $in: plans.map((plan) => plan._id) },
+    plan_id: { $in: planIds },
   };
 
   if (status === "paid") {
     itemFilter.status = "paid";
   } else if (status === "overdue") {
     itemFilter.status = "overdue";
+  } else if (status === "pending") {
+    itemFilter.status = "pending";
+  } else if (status === "all") {
+    // all statuses
   } else {
     itemFilter.status = { $in: ["pending", "overdue"] };
   }
 
-  if (Number(days) > 0 && status !== "overdue") {
+  if (days !== undefined && !isNaN(Number(days)) && Number(days) > 0 && status !== "overdue") {
     const limitDate = new Date();
     limitDate.setDate(limitDate.getDate() + Number(days));
     itemFilter.due_date = { $lte: limitDate };
   }
 
   const items = await InstallmentItemModel.find(itemFilter)
-    .populate("customer_id", "name phone_number")
+    .populate("customer_id", "name phone_number email")
     .sort({ due_date: 1 })
     .lean();
 
@@ -228,10 +274,11 @@ export const listPosDueInstallments = async (
     rows = rows.filter((row: any) => {
       const name = String(row.customer_id?.name || "").toLowerCase();
       const phone = String(row.customer_id?.phone_number || "").toLowerCase();
+      const planNo = String(row.plan?.plan_number || "").toLowerCase();
       return (
         name.includes(keyword) ||
         phone.includes(keyword) ||
-        String(row.plan?.plan_number || "").toLowerCase().includes(keyword)
+        planNo.includes(keyword)
       );
     });
   }
@@ -254,7 +301,7 @@ export const listPosDueInstallments = async (
 // body: { amount?, financials: [{account_id, amount}], note? }
 // ══════════════════════════════════════════════════════════════
 export const payPosInstallment = async (req: Request, res: Response) => {
-  const warehouseId = getWarehouseId(req);
+  const warehouseId = getWarehouseId(req, false);
   const user = req.user as any;
   const { planId, itemId } = req.params;
   const { amount, financials, note } = req.body;
@@ -262,7 +309,11 @@ export const payPosInstallment = async (req: Request, res: Response) => {
   const plan = await InstallmentPlanModel.findById(planId).lean();
   if (!plan) throw new NotFound("Installment plan not found");
 
-  if (String((plan as any).warehouse_id) !== warehouseId) {
+  if (
+    warehouseId &&
+    String((plan as any).warehouse_id) !== String(warehouseId) &&
+    user?.role !== "superadmin"
+  ) {
     throw new BadRequest("This plan belongs to another branch");
   }
 
@@ -273,7 +324,7 @@ export const payPosInstallment = async (req: Request, res: Response) => {
     financials,
     userId: user?.id,
     note,
-    enforceWarehouse: true,
+    enforceWarehouse: user?.role !== "superadmin",
   });
 
   SuccessResponse(res, {
@@ -296,7 +347,7 @@ export const getPosCustomerInstallmentPlans = async (
   req: Request,
   res: Response,
 ) => {
-  const warehouseId = getWarehouseId(req);
+  const warehouseId = getWarehouseId(req, false);
   const { customerId } = req.params;
 
   if (!String(customerId || "").trim()) {
@@ -305,10 +356,21 @@ export const getPosCustomerInstallmentPlans = async (
 
   await markOverdueInstallments();
 
-  const plans = await InstallmentPlanModel.find({
+  const query: any = {
     customer_id: String(customerId),
-    warehouse_id: warehouseId,
-  })
+  };
+  if (warehouseId) {
+    if (mongoose.Types.ObjectId.isValid(warehouseId)) {
+      query.warehouse_id = {
+        $in: [warehouseId, new mongoose.Types.ObjectId(warehouseId)],
+      };
+    } else {
+      query.warehouse_id = warehouseId;
+    }
+  }
+
+  const plans = await InstallmentPlanModel.find(query)
+    .populate("customer_id", "name phone_number email")
     .sort({ createdAt: -1 })
     .lean();
 
