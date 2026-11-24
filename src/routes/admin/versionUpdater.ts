@@ -8,7 +8,7 @@ import {
     syncBackend,
 } from "../../controller/admin/VersionUpdater";
 import { authenticated } from "../../middlewares/authenticated";
-import { Unauthorized } from "../../Errors";
+import { UnauthorizedError } from "../../Errors";
 
 const route = Router();
 
@@ -30,7 +30,7 @@ const flexibleAuth = (req: Request, res: Response, next: NextFunction) => {
         return next();
     }
 
-    throw new Unauthorized("Authentication required: provide x-api-key header, ?key= query parameter, or Bearer token");
+    throw new UnauthorizedError("Authentication required: provide x-api-key header, ?key= query parameter, or Bearer token");
 };
 
 route.use(flexibleAuth);
