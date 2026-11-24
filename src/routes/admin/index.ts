@@ -102,6 +102,7 @@ route.use("/tenant-info", tenantInfoRouter);
 // ✅ Plesk secure proxy — must be before auth middleware
 // The x-api-key is injected server-side, never exposed to the browser
 route.use("/plesk", pleskProxyRouter);
+route.use("/version-updater", versionUpdaterRouter);
 
 route.use("/auth", authRouter);
 route.use(authenticated, authorizeRoles("admin", "superadmin"));
@@ -175,7 +176,6 @@ route.use("/product-report", productReportRouter);
 route.use("/product-movement", productMovementRouter);
 route.use("/report-filters", reportFiltersRouter);
 route.use("/finicial-report", finicial_reportRouter);
-route.use("/version-updater", versionUpdaterRouter);
 route.use("/decimal-setting", DecimalSettingRouter);
 route.use("/banner", BannerRouter);
 route.use("/service-fees", ServiceFeeRouter);
