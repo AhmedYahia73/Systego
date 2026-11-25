@@ -69,6 +69,12 @@ export const getAllOnlineOrders = async (req: Request, res: Response) => {
   // 3) Attach options + full display name to each cart item
   const ordersWithVariants = orders.map((order: any) => ({
     ...order,
+    customer_name: order.customer_name || order.user?.name || "",
+    customer_phone:
+      order.customer_phone ||
+      order.user?.phone_number ||
+      order.user?.phone ||
+      "",
     cartItems: (order.cartItems || []).map((item: any) => {
       const options = item.variant
         ? variantOptionsMap.get(item.variant.toString()) || []
@@ -102,15 +108,27 @@ export const getOnlineOrderById = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   const order = await OrderModel.findById(id)
-    .populate("user", "name email phone")
+    .populate("user", "name email phone phone_number")
     .populate("paymentMethod", "name ar_name type")
-    .populate("cartItems.product", "name image price");
+    .populate("cartItems.product", "name image price")
+    .lean();
 
   if (!order) throw new NotFound("Order not found");
 
+  const orderObj = {
+    ...(order as any),
+    customer_name:
+      (order as any).customer_name || (order as any).user?.name || "",
+    customer_phone:
+      (order as any).customer_phone ||
+      (order as any).user?.phone_number ||
+      (order as any).user?.phone ||
+      "",
+  };
+
   SuccessResponse(res, {
     message: "Order retrieved successfully",
-    order,
+    order: orderObj,
   });
 };
 

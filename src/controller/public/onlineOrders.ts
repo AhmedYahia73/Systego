@@ -46,8 +46,8 @@ const serializeOrder = (order: any) => ({
   id: order.externalId ?? null,
   reference: order.reference ?? null,
   status: order.status,
-  customer_name: order.customerName || "",
-  customer_phone: order.customerPhone || "",
+  customer_name: order.customer_name || "",
+  customer_phone: order.customer_phone || "",
   total_price: order.totalOrderPrice ?? 0,
   currency: order.currency || "EGP",
   created_at: order.createdAt ?? null,
@@ -244,8 +244,8 @@ export const createEcommerceOnlineOrder = async (
   try {
     order = await OrderModel.create({
       externalId,
-      customerName,
-      customerPhone,
+      customer_name: customerName,
+      customer_phone: customerPhone,
       currency,
       user: customer?._id ?? null,
       orderType: "delivery",

@@ -69,4 +69,8 @@ export const createOrderSchema = Joi.object({
 
   proofImage: Joi.string().optional(),
   sessionId: Joi.string().optional(),
+
+  // 🆕 بيانات العميل للطلب كـ Guest
+  customer_name: Joi.string().trim().allow("", null).optional(),
+  customer_phone: Joi.string().trim().allow("", null).optional(),
 });

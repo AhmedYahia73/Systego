@@ -171,6 +171,12 @@ export const getAllOnlineOrders = async (req: Request, res: Response) => {
   // 3) Attach options
   const ordersWithVariants = orders.map((order: any) => ({
     ...order,
+    customer_name: order.customer_name || order.user?.name || "",
+    customer_phone:
+      order.customer_phone ||
+      order.user?.phone_number ||
+      order.user?.phone ||
+      "",
     cartItems: (order.cartItems || []).map((item: any) => {
       const options = item.variant
         ? variantOptionsMap.get(item.variant.toString()) || []
@@ -232,7 +238,7 @@ export const getOnlineOrderById = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   const order = await OrderModel.findById(id)
-    .populate({ path: "user", select: "_id name email phone" })
+    .populate({ path: "user", select: "_id name email phone phone_number" })
     .populate({ path: "paymentMethod", select: "_id name ar_name type" })
     .populate({ path: "warehouse", select: "_id name" })
     .populate({ path: "cartItems.product", select: "_id name image price" })
@@ -264,9 +270,21 @@ export const getOnlineOrderById = async (req: Request, res: Response) => {
     }).lean();
   }
 
+  const orderObj = {
+    ...(order as any),
+    customer_name:
+      (order as any).customer_name || (order as any).user?.name || "",
+    customer_phone:
+      (order as any).customer_phone ||
+      (order as any).user?.phone_number ||
+      (order as any).user?.phone ||
+      "",
+    bostaShipment,
+  };
+
   SuccessResponse(res, {
     message: "Order retrieved successfully",
-    order: { ...(order as any), bostaShipment },
+    order: orderObj,
   });
 };
 
@@ -568,6 +586,20 @@ export const bulkCreateShipments = async (req: Request, res: Response) => {
               email: customer.email || "",
             };
           }
+        }
+
+        if (!receiver && (order as any).customer_phone) {
+          const rawPhone = (order as any).customer_phone;
+          const rawName = (
+            (order as any).customer_name || "Guest Customer"
+          ).trim();
+          const nameParts = rawName.split(/\s+/);
+          receiver = {
+            firstName: nameParts[0] || "Guest",
+            lastName: nameParts.slice(1).join(" ") || "",
+            phone: rawPhone,
+            email: "",
+          };
         }
 
         if (!receiver?.phone) {

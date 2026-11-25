@@ -28,9 +28,9 @@ const orderSchema = new Schema(
       index: { unique: true, sparse: true },
     },
 
-    // 🆕 Raw customer data sent by the ecommerce integration.
-    customerName: { type: String, trim: true, default: "" },
-    customerPhone: { type: String, trim: true, default: "" },
+    // 🆕 Customer info (for guest orders)
+    customer_name: { type: String, trim: true, default: "" },
+    customer_phone: { type: String, trim: true, default: "" },
 
     // 🆕 Order currency (the integration can send EGP, USD, ...).
     currency: {

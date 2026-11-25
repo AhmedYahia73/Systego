@@ -71,9 +71,13 @@ export const createOrder = async (
     warehouseId,
     paymentType = "full", // "full" | "installment"
     installment, // { months, down_payment?, notes? }
+    customer_name,
+    customer_phone,
   } = req.body;
 
   const isInstallment = String(paymentType) === "installment";
+  const guestCustomerName = (customer_name || "").trim();
+  const guestCustomerPhone = (customer_phone || "").trim();
 
   try {
     // 1️⃣ Find Cart
@@ -81,6 +85,15 @@ export const createOrder = async (
       throw new BadRequest(
         "User ID or Session ID is required to find your cart",
       );
+    }
+
+    if (!userId) {
+      if (!guestCustomerName) {
+        throw new BadRequest("customer_name is required for guest checkout");
+      }
+      if (!guestCustomerPhone) {
+        throw new BadRequest("customer_phone is required for guest checkout");
+      }
     }
 
     // Resolve the cart consistently with the cart controller:
@@ -705,10 +718,18 @@ export const createOrder = async (
       }
     }
 
-    // 7️⃣ Create Order
+    // 7️⃣ Customer Data & Create Order
+    const customer = userId ? await CustomerModel.findById(userId) : null;
+    const resolvedCustomerName =
+      guestCustomerName || (customer as any)?.name || "";
+    const resolvedCustomerPhone =
+      guestCustomerPhone || (customer as any)?.phone_number || "";
+
     const order = await OrderModel.create([
       {
         user: userId || null,
+        customer_name: resolvedCustomerName,
+        customer_phone: resolvedCustomerPhone,
         orderType,
         warehouse: resolvedWarehouseId || undefined,
         cartItems: finalItems,
@@ -820,10 +841,11 @@ export const createOrder = async (
           );
 
           const billingData = {
-            first_name: customer?.name || "Guest",
+            first_name: customer?.name || guestCustomerName || "Guest",
             last_name: "Customer",
             email: customer?.email || "guest@systego.com",
-            phone_number: customer?.phone_number || "01000000000",
+            phone_number:
+              customer?.phone_number || guestCustomerPhone || "01000000000",
             apartment: rawAddressForPaymob.apartmentNumber || "NA",
             floor: rawAddressForPaymob.floorNumber || "NA",
             street: shippingAddressData.details || "NA",
@@ -898,8 +920,10 @@ export const createOrder = async (
             secureKey: fawryConfig.secureKey,
             merchantRefNum: order[0]._id.toString(),
             customerProfileId: userId?.toString() || "guest",
-            customerName: customer?.name || "Guest Customer",
-            customerMobile: customer?.phone_number || "01000000000",
+            customerName:
+              customer?.name || guestCustomerName || "Guest Customer",
+            customerMobile:
+              customer?.phone_number || guestCustomerPhone || "01000000000",
             customerEmail: customer?.email || "guest@systego.com",
             amount: totalPrice,
             returnUrl:
@@ -973,6 +997,8 @@ export const createOrder = async (
       userId: userId || null,
       totalPrice,
       currency: (order[0] as any).currency || "EGP",
+      fallbackCustomerName: resolvedCustomerName,
+      fallbackCustomerPhone: resolvedCustomerPhone,
     });
 
     return SuccessResponse(
@@ -995,11 +1021,23 @@ export const createOrder = async (
 // ===============================
 export const getMyOrders = async (req: Request, res: Response) => {
   const orders = await OrderModel.find({ user: req.user?.id })
+    .populate("user", "name phone phone_number")
     .populate("paymentMethod", "name ar_name")
     .populate("warehouse", "name")
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: -1 })
+    .lean();
 
-  SuccessResponse(res, { orders });
+  const formattedOrders = orders.map((order: any) => ({
+    ...order,
+    customer_name: order.customer_name || order.user?.name || "",
+    customer_phone:
+      order.customer_phone ||
+      order.user?.phone_number ||
+      order.user?.phone ||
+      "",
+  }));
+
+  SuccessResponse(res, { orders: formattedOrders });
 };
 
 // ===============================
@@ -1009,31 +1047,58 @@ export const getOrderDetails = async (req: Request, res: Response) => {
   const order = await OrderModel.findOne({
     _id: req.params.id,
   })
+    .populate("user", "name phone phone_number")
     .populate("cartItems.product", "name ar_name image")
     .populate({
       path: "cartItems.variant",
       populate: { path: "productId", select: "name ar_name" },
     })
     .populate("paymentMethod", "name ar_name")
-    .populate("warehouse", "name");
+    .populate("warehouse", "name")
+    .lean();
 
   if (!order) throw new NotFound("Order not found");
 
-  SuccessResponse(res, { order });
+  const orderObj = {
+    ...order,
+    customer_name:
+      (order as any).customer_name || (order as any).user?.name || "",
+    customer_phone:
+      (order as any).customer_phone ||
+      (order as any).user?.phone_number ||
+      (order as any).user?.phone ||
+      "",
+  };
+
+  SuccessResponse(res, { order: orderObj });
 };
 
 export const getOrderStatusByRef = async (req: Request, res: Response) => {
   const order = await OrderModel.findOne({
     reference: req.params.ref,
-  }).populate([
-    { path: "cartItems.product", select: "name ar_name image price" },
-    { path: "warehouse", select: "name address phone email" },
-    { path: "paymentMethod" },
-  ]);
+  })
+    .populate([
+      { path: "user", select: "name phone phone_number" },
+      { path: "cartItems.product", select: "name ar_name image price" },
+      { path: "warehouse", select: "name address phone email" },
+      { path: "paymentMethod" },
+    ])
+    .lean();
 
   if (!order) throw new NotFound("Order not found");
 
-  SuccessResponse(res, { order });
+  const orderObj = {
+    ...order,
+    customer_name:
+      (order as any).customer_name || (order as any).user?.name || "",
+    customer_phone:
+      (order as any).customer_phone ||
+      (order as any).user?.phone_number ||
+      (order as any).user?.phone ||
+      "",
+  };
+
+  SuccessResponse(res, { order: orderObj });
 };
 
 // ===============================
