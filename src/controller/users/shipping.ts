@@ -1,10 +1,17 @@
 // src/controller/users/Shipping.ts
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import { SuccessResponse } from "../../utils/response";
 import { BadRequest } from "../../Errors/BadRequest";
 import { ShippingSettingsModel } from "../../models/schema/admin/ShippingSettings";
+import { BostaShipmentModel } from "../../models/schema/admin/BostaShipment";
 import { UserModel } from "../../models/schema/admin/User";
 import { getBostaCreds } from "../../utils/shipping/getBostaCreds";
+import {
+  applyBostaStatusUpdate,
+  resolveBostaState,
+  syncOrderFromBostaState,
+} from "../../utils/shipping/bostaStatus";
 import bostaService from "../../services/bosta.service";
 
 // ═══════════════════════════════════════════════════════════
@@ -184,4 +191,110 @@ export const getBostaPricingForUser = async (req: Request, res: Response) => {
   } catch (err: any) {
     throw new BadRequest(`Failed to calculate pricing: ${err.message}`);
   }
+};
+
+// ═══════════════════════════════════════════════════════════
+// 🔔 BOSTA WEBHOOK CALLBACK (Public — No Auth)
+// يستقبل تحديثات الحالة من بوسطة تلقائياً ويحدّث الشحنة والأوردر
+// ═══════════════════════════════════════════════════════════
+export const handleBostaWebhook = async (req: Request, res: Response) => {
+  const payload = req.body || {};
+  const {
+    _id,
+    deliveryId,
+    trackingNumber,
+    state,
+    status,
+    statusCode,
+    businessReference,
+  } = payload;
+
+  const bostaDeliveryId = _id || deliveryId;
+  if (!bostaDeliveryId && trackingNumber === undefined && !businessReference) {
+    throw new BadRequest(
+      "Missing shipment identifier (_id, trackingNumber, or businessReference)",
+    );
+  }
+
+  const resolved = resolveBostaState({ state, status, statusCode });
+  if (!resolved.bostaStatus && resolved.statusCode === null) {
+    throw new BadRequest("Valid state or status is required");
+  }
+
+  // 1) Try exact shipment lookup by deliveryId or trackingNumber first
+  const primaryOr: any[] = [];
+  if (bostaDeliveryId) {
+    primaryOr.push({ deliveryId: String(bostaDeliveryId) });
+  }
+  if (trackingNumber !== undefined && trackingNumber !== null && trackingNumber !== "") {
+    primaryOr.push({ trackingNumber: String(trackingNumber) });
+  }
+
+  let shipment = primaryOr.length
+    ? await BostaShipmentModel.findOne({ $or: primaryOr }).sort({ createdAt: -1 })
+    : null;
+
+  // 2) Fallback to businessReference (Order ID)
+  if (!shipment && businessReference) {
+    shipment = await BostaShipmentModel.findOne({
+      relatedModel: "Order",
+      relatedId: String(businessReference),
+    }).sort({ createdAt: -1 });
+  }
+
+  if (shipment) {
+    const result = await applyBostaStatusUpdate({
+      shipment,
+      bostaData: payload,
+      source: "bosta",
+      appendHistoryIfUnchanged: true,
+    });
+
+    return SuccessResponse(res, {
+      message: "Bosta webhook processed successfully",
+      updated: true,
+      statusChanged: result.statusChanged,
+      orderStatusChanged: result.orderStatusChanged,
+      shipment: {
+        _id: shipment._id,
+        deliveryId: shipment.deliveryId,
+        trackingNumber: shipment.trackingNumber,
+        status: result.status,
+        statusCode: result.statusCode,
+        lastSyncAt: shipment.lastSyncAt,
+      },
+      order: result.order,
+    });
+  }
+
+  // 3) If no BostaShipment record exists, still sync Order if businessReference matches an Order
+  if (
+    businessReference &&
+    mongoose.Types.ObjectId.isValid(String(businessReference)) &&
+    resolved.orderStatus
+  ) {
+    const orderResult = await syncOrderFromBostaState({
+      orderId: String(businessReference),
+      orderStatus: resolved.orderStatus,
+      bostaStatus: resolved.bostaStatus || String(resolved.statusCode),
+      statusCode: resolved.statusCode,
+      bostaData: payload,
+      source: "bosta",
+    });
+
+    if (orderResult.order) {
+      return SuccessResponse(res, {
+        message: "Bosta webhook processed and order updated",
+        updated: true,
+        orderStatusChanged: orderResult.orderStatusChanged,
+        shipment: null,
+        order: orderResult.order,
+      });
+    }
+  }
+
+  return SuccessResponse(res, {
+    message: "Webhook received (no matching shipment or order found)",
+    updated: false,
+  });
 };

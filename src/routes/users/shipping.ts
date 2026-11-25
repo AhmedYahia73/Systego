@@ -6,6 +6,7 @@ import {
   getBostaCitiesForUser,
   getBostaDistrictsForUser,
   getBostaPricingForUser,
+  handleBostaWebhook,
 } from "../../controller/users/shipping";
 
 const route = Router();
@@ -25,5 +26,8 @@ route.get("/bosta/districts/:cityId", catchAsync(getBostaDistrictsForUser));
 
 // 🆕 Bosta Pricing — العميل يعرف تكلفة التوصيل
 route.get("/bosta/pricing", catchAsync(getBostaPricingForUser));
+
+// 🔔 Bosta Webhook Callback (Public — بدون Auth)
+route.post("/bosta/webhook", catchAsync(handleBostaWebhook));
 
 export default route;

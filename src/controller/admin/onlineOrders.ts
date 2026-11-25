@@ -10,6 +10,7 @@ import { SuccessResponse } from "../../utils/response";
 import { BadRequest, NotFound } from "../../Errors";
 import { ProductPriceOptionModel } from "../../models/schema/admin/product_price";
 import { getBostaCreds } from "../../utils/shipping/getBostaCreds";
+import { CANCELLED_BOSTA_STATUSES } from "../../utils/shipping/bostaStatus";
 import bostaService from "../../services/bosta.service";
 
 // ═══════════════════════════════════════════════════════════
@@ -467,7 +468,7 @@ export const updateOnlineOrderStatus = async (req: Request, res: Response) => {
       throw new BadRequest("Bosta shipment record not found");
     }
 
-    if (shipment.status === "Cancelled") {
+    if (CANCELLED_BOSTA_STATUSES.includes(shipment.status || "")) {
       throw new BadRequest(
         "Bosta shipment is cancelled. Cannot update status manually.",
       );
@@ -902,8 +903,10 @@ export const deleteOnlineOrder = async (req: Request, res: Response) => {
     // 🔴 نادي Bosta API عشان نلغي الـ shipment فعلياً
     if (
       bostaShipment.deliveryId &&
-      bostaShipment.status !== "Cancelled" &&
-      !["Delivered", "Returned"].includes(bostaShipment.status || "")
+      !CANCELLED_BOSTA_STATUSES.includes(bostaShipment.status || "") &&
+      !["Delivered", "Returned", "Returned to business"].includes(
+        bostaShipment.status || "",
+      )
     ) {
       try {
         const settings = await ShippingSettingsModel.findOne({

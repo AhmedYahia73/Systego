@@ -9,6 +9,13 @@ import { ProductModel } from "../../models/schema/admin/products";
 import { CustomerModel } from "../../models/schema/admin/POS/customer";
 import { getSuperadminId } from "../../utils/shipping/getSuperadminId";
 import { getBostaCreds } from "../../utils/shipping/getBostaCreds";
+import {
+  applyBostaStatusUpdate,
+  CANCELLED_BOSTA_STATUSES,
+  resolveBostaState,
+  syncOrderFromBostaState,
+  TERMINAL_BOSTA_STATUSES,
+} from "../../utils/shipping/bostaStatus";
 import bostaService from "../../services/bosta.service";
 import { OrderModel } from "../../models/schema/users/Order";
 
@@ -615,6 +622,11 @@ export const createBostaDeliveryFromOrder = async (
     );
   }
 
+  const initialBostaState = resolveBostaState({
+    state: bostaResponse?.state,
+    status: bostaResponse?.status,
+  });
+
   const shipment = await BostaShipmentModel.create({
     superadminId,
     relatedModel: "Order",
@@ -624,9 +636,8 @@ export const createBostaDeliveryFromOrder = async (
     deliveryId: newDeliveryId,
     trackingNumber: newTrackingNumber,
     awb: bostaResponse?.awb || null,
-    status:
-      bostaResponse?.state?.value || bostaResponse?.status || "PendingPickup",
-    statusCode: bostaResponse?.state?.code || null,
+    status: initialBostaState.bostaStatus || "PendingPickup",
+    statusCode: initialBostaState.statusCode,
     labelUrl: bostaResponse?.labelUrl || bostaResponse?.label || null,
 
     cod: codAmount,
@@ -642,8 +653,8 @@ export const createBostaDeliveryFromOrder = async (
 
     trackingHistory: [
       {
-        status: bostaResponse?.state?.value || "PendingPickup",
-        statusCode: bostaResponse?.state?.code || null,
+        status: initialBostaState.bostaStatus || "PendingPickup",
+        statusCode: initialBostaState.statusCode,
         snapshotAt: new Date(),
         data: bostaResponse,
       },
@@ -954,11 +965,16 @@ export const bulkCreateBostaDeliveries = async (
     try {
       const bostaData = await bostaService.getDelivery(creds, deliveryId);
 
+      const resolvedState = resolveBostaState({
+        state: bostaData?.state,
+        status: bostaData?.status,
+      });
+
       shipment.trackingNumber =
         bostaData?.trackingNumber || bostaData?.tracking?.number || null;
       shipment.awb = bostaData?.awb || null;
-      shipment.status = bostaData?.state?.value || shipment.status;
-      shipment.statusCode = bostaData?.state?.code || null;
+      shipment.status = resolvedState.bostaStatus || shipment.status;
+      shipment.statusCode = resolvedState.statusCode ?? shipment.statusCode;
       shipment.labelUrl = bostaData?.labelUrl || bostaData?.label || null;
       shipment.shippingCost = bostaData?.pricing?.total || 0;
       shipment.rawResponse = bostaData;
@@ -967,8 +983,8 @@ export const bulkCreateBostaDeliveries = async (
 
       shipment.trackingHistory = [
         {
-          status: bostaData?.state?.value || null,
-          statusCode: bostaData?.state?.code || null,
+          status: resolvedState.bostaStatus || null,
+          statusCode: resolvedState.statusCode,
           snapshotAt: new Date(),
           data: bostaData,
         },
@@ -1017,7 +1033,7 @@ export const getPendingPickups = async (req: Request, res: Response) => {
     type: 10,
     deliveryId: { $ne: null },
     status: {
-      $nin: ["Delivered", "Cancelled", "Returned", "Failed to deliver"],
+      $nin: TERMINAL_BOSTA_STATUSES,
     },
     $or: [
       { "pickup.status": { $exists: false } },
@@ -1079,7 +1095,7 @@ export const createDailyPickup = async (req: Request, res: Response) => {
     type: 10,
     deliveryId: { $ne: null },
     status: {
-      $nin: ["Delivered", "Cancelled", "Returned", "Failed to deliver"],
+      $nin: TERMINAL_BOSTA_STATUSES,
     },
     $or: [
       { "pickup.status": { $exists: false } },
@@ -1506,6 +1522,11 @@ export const createBostaReturnDelivery = async (
     bostaResponse?.data?.tracking?.number ||
     null;
 
+  const returnState = resolveBostaState({
+    state: bostaResponse?.state,
+    status: bostaResponse?.status,
+  });
+
   const shipment = await BostaShipmentModel.create({
     superadminId,
     relatedModel: "Order",
@@ -1515,8 +1536,8 @@ export const createBostaReturnDelivery = async (
     deliveryId: newDeliveryId,
     trackingNumber: newTrackingNumber,
     awb: bostaResponse?.awb || null,
-    status: bostaResponse?.state?.value || bostaResponse?.status || null,
-    statusCode: bostaResponse?.state?.code || null,
+    status: returnState.bostaStatus,
+    statusCode: returnState.statusCode,
     labelUrl: bostaResponse?.labelUrl || bostaResponse?.label || null,
 
     cod: 0,
@@ -1532,8 +1553,8 @@ export const createBostaReturnDelivery = async (
 
     trackingHistory: [
       {
-        status: bostaResponse?.state?.value || null,
-        statusCode: bostaResponse?.state?.code || null,
+        status: returnState.bostaStatus,
+        statusCode: returnState.statusCode,
         snapshotAt: new Date(),
         data: bostaResponse,
       },
@@ -1752,7 +1773,7 @@ export const getBostaShipmentsStats = async (req: Request, res: Response) => {
     if (status === "Delivered") {
       dailyBreakdown[date].delivered += item.count;
     }
-    if (status === "Cancelled" || status === "Canceled") {
+    if (CANCELLED_BOSTA_STATUSES.includes(status)) {
       dailyBreakdown[date].cancelled += item.count;
     }
   }
@@ -1829,7 +1850,7 @@ export const refreshBostaTracking = async (req: Request, res: Response) => {
 
   if (!shipment) throw new BadRequest("Shipment not found");
 
-  if (shipment.status === "Cancelled") {
+  if (CANCELLED_BOSTA_STATUSES.includes(shipment.status || "")) {
     throw new BadRequest("Shipment is cancelled. Cannot refresh tracking.");
   }
 
@@ -1861,58 +1882,14 @@ export const refreshBostaTracking = async (req: Request, res: Response) => {
     throw new BadRequest("Failed to fetch from Bosta (no data returned)");
   }
 
-  const newStatus = bostaData?.state?.value || shipment.status;
-  const newStatusCode = bostaData?.state?.code || shipment.statusCode;
-
-  const statusChanged =
-    newStatus !== shipment.status || newStatusCode !== shipment.statusCode;
-
-  shipment.status = newStatus;
-  shipment.statusCode = newStatusCode;
-  shipment.lastSyncAt = new Date();
-  shipment.lastTrackAt = new Date();
-  shipment.rawResponse = bostaData;
-
-  if (!shipment.trackingNumber) {
-    shipment.trackingNumber =
-      bostaData?.trackingNumber || bostaData?.tracking?.number || null;
-  }
-
-  if (!shipment.deliveryId) {
-    shipment.deliveryId =
-      bostaData?.deliveryId || bostaData?._id || shipment.deliveryId;
-  }
-
-  if (bostaData?.labelUrl) shipment.labelUrl = bostaData.labelUrl;
-
-  shipment.trackingHistory = shipment.trackingHistory || [];
-  shipment.trackingHistory.push({
-    status: newStatus,
-    statusCode: newStatusCode,
-    snapshotAt: new Date(),
-    data: bostaData,
-  });
-
-  await shipment.save();
-
-  if (statusChanged && shipment.relatedModel === "Order") {
-    const map: Record<string, string> = {
-      "Pickup requested": "processing",
-      "Picked up": "processing",
-      "In transit": "out_for_delivery",
-      "Out for delivery": "out_for_delivery",
-      Delivered: "delivered",
-      Cancelled: "canceled",
-      "Failed to deliver": "failed_to_deliver",
-      Returned: "returned",
-    };
-    const newOrderStatus = newStatus ? map[newStatus] : null;
-    if (newOrderStatus) {
-      await OrderModel.findByIdAndUpdate(shipment.relatedId, {
-        status: newOrderStatus,
-      });
-    }
-  }
+  const { statusChanged, orderStatusChanged, order } =
+    await applyBostaStatusUpdate({
+      shipment,
+      bostaData,
+      source: "bosta",
+      updatedBy: (req.user as any)?.id || null,
+      appendHistoryIfUnchanged: true,
+    });
 
   SuccessResponse(res, {
     message: "✅ Tracking refreshed successfully",
@@ -1926,10 +1903,12 @@ export const refreshBostaTracking = async (req: Request, res: Response) => {
       lastSyncAt: shipment.lastSyncAt,
       lastTrackAt: shipment.lastTrackAt,
       statusChanged,
-      historyCount: shipment.trackingHistory.length,
-      history: shipment.trackingHistory,
+      orderStatusChanged,
+      historyCount: shipment.trackingHistory?.length || 0,
+      history: shipment.trackingHistory || [],
       rawResponse: bostaData,
     },
+    order,
     endpointUsed,
   });
 };
@@ -1970,7 +1949,7 @@ export const syncBostaShipment = async (req: Request, res: Response) => {
   });
   if (!shipment) throw new BadRequest("Shipment not found");
 
-  if (shipment.status === "Cancelled") {
+  if (CANCELLED_BOSTA_STATUSES.includes(shipment.status || "")) {
     throw new BadRequest("Shipment is cancelled. Cannot sync.");
   }
 
@@ -1988,17 +1967,20 @@ export const syncBostaShipment = async (req: Request, res: Response) => {
     );
   }
 
-  shipment.status = bostaData?.state?.value || shipment.status;
-  shipment.statusCode = bostaData?.state?.code || shipment.statusCode;
-  shipment.lastSyncAt = new Date();
-  shipment.rawResponse = bostaData;
-  if (bostaData?.labelUrl) shipment.labelUrl = bostaData.labelUrl;
-
-  await shipment.save();
+  const { statusChanged, orderStatusChanged, order } =
+    await applyBostaStatusUpdate({
+      shipment,
+      bostaData,
+      source: "bosta",
+      updatedBy: (req.user as any)?.id || null,
+    });
 
   SuccessResponse(res, {
     message: "✅ Shipment synced successfully",
+    statusChanged,
+    orderStatusChanged,
     shipment,
+    order,
   });
 };
 
@@ -2015,7 +1997,7 @@ export const cancelBostaShipment = async (req: Request, res: Response) => {
   });
   if (!shipment) throw new BadRequest("Shipment not found");
 
-  if (shipment.status === "Cancelled") {
+  if (CANCELLED_BOSTA_STATUSES.includes(shipment.status || "")) {
     throw new BadRequest("Shipment is already cancelled.");
   }
   if (shipment.status === "Delivered") {
@@ -2062,9 +2044,28 @@ export const cancelBostaShipment = async (req: Request, res: Response) => {
     );
   }
 
-  shipment.status = "Cancelled";
+  shipment.status = "Canceled";
+  shipment.statusCode = 49;
   shipment.lastSyncAt = new Date();
+  shipment.trackingHistory = shipment.trackingHistory || [];
+  shipment.trackingHistory.push({
+    status: "Canceled",
+    statusCode: 49,
+    snapshotAt: new Date(),
+    data: { source: "admin_cancel" },
+  });
   await shipment.save();
+
+  if (shipment.relatedModel === "Order" && shipment.relatedId) {
+    await syncOrderFromBostaState({
+      orderId: String(shipment.relatedId),
+      orderStatus: "canceled",
+      bostaStatus: "Canceled",
+      statusCode: 49,
+      source: "admin",
+      updatedBy: (req.user as any)?.id || null,
+    });
+  }
 
   SuccessResponse(res, {
     message: "✅ Shipment cancelled successfully",
@@ -2085,7 +2086,7 @@ export const getBostaLabel = async (req: Request, res: Response) => {
   });
   if (!shipment) throw new BadRequest("Shipment not found");
 
-  if (shipment.status === "Cancelled") {
+  if (CANCELLED_BOSTA_STATUSES.includes(shipment.status || "")) {
     throw new BadRequest("Shipment is cancelled. Label not available.");
   }
 
