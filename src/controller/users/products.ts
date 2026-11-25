@@ -7,10 +7,15 @@ import { Product_WarehouseModel } from "../../models/schema/admin/Product_Wareho
 import { ProductModel } from "../../models/schema/admin/products";
 import { SuccessResponse } from "../../utils/response";
 import { NotFound } from "../../Errors/NotFound";
+import { BadRequest } from "../../Errors/BadRequest";
 import { DiscountModel } from "../../models/schema/admin/Discount";
 import { ProductSalesModel } from "../../models/schema/admin/POS/Sale";
 import { OrderModel } from "../../models/schema/users/Order";
 import { CategoryModel } from "../../models/schema/admin/category";
+import {
+  ProductPriceModel,
+  ProductPriceOptionModel,
+} from "../../models/schema/admin/product_price";
 import { calculateProductPricing } from "../../utils/producthelper";
 
 export const formatStoreProduct = (
@@ -982,6 +987,118 @@ export const getProductsByCategory = asyncHandler(
         },
         total: formattedProducts.length,
         data: formattedProducts,
+      },
+      200,
+    );
+  },
+);
+
+/** Pick exact option-set match first, then partial subset match, preferring non-empty gallery. */
+const pickMatchingPrice = (
+  prices: any[],
+  optionMap: Map<string, Set<string>>,
+  targetOptionIds: string[],
+) => {
+  const bySubset = prices.filter((p) => {
+    const opts = optionMap.get(String(p._id));
+    return opts && targetOptionIds.every((id) => opts.has(id));
+  });
+  if (bySubset.length === 0) return null;
+
+  const exact = bySubset.filter(
+    (p) => optionMap.get(String(p._id))!.size === targetOptionIds.length,
+  );
+  const pool = exact.length > 0 ? exact : bySubset;
+
+  return (
+    pool.find((p) => Array.isArray(p.gallery) && p.gallery.length > 0) ||
+    pool[0]
+  );
+};
+
+/**
+ * POST /api/store/product/gallery
+ * Public endpoint returning the ProductPrice gallery matching an array of option IDs.
+ */
+export const getGalleryByOptions = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { options, productId } = req.body || {};
+
+    if (!Array.isArray(options) || options.length === 0) {
+      throw new BadRequest("options array is required");
+    }
+
+    const uniqueOptionIds = [...new Set(options.map((id: any) => String(id)))];
+    if (uniqueOptionIds.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+      throw new BadRequest("Invalid option ID in options array");
+    }
+
+    if (
+      productId !== undefined &&
+      productId !== null &&
+      productId !== "" &&
+      !mongoose.Types.ObjectId.isValid(String(productId))
+    ) {
+      throw new BadRequest("Invalid productId");
+    }
+
+    let prices: any[] = [];
+    let priceOptions: any[] = [];
+
+    if (productId) {
+      prices = await ProductPriceModel.find({ productId })
+        .select("_id productId gallery")
+        .lean();
+
+      if (prices.length > 0) {
+        priceOptions = await ProductPriceOptionModel.find({
+          product_price_id: { $in: prices.map((p) => p._id) },
+        })
+          .select("product_price_id option_id")
+          .lean();
+      }
+    } else {
+      const matchingLinks = await ProductPriceOptionModel.find({
+        option_id: { $in: uniqueOptionIds },
+      })
+        .select("product_price_id")
+        .lean();
+
+      const candidatePriceIds = [
+        ...new Set(matchingLinks.map((l: any) => String(l.product_price_id))),
+      ];
+
+      if (candidatePriceIds.length > 0) {
+        [prices, priceOptions] = await Promise.all([
+          ProductPriceModel.find({ _id: { $in: candidatePriceIds } })
+            .select("_id productId gallery")
+            .lean(),
+          ProductPriceOptionModel.find({
+            product_price_id: { $in: candidatePriceIds },
+          })
+            .select("product_price_id option_id")
+            .lean(),
+        ]);
+      }
+    }
+
+    const optionMap = new Map<string, Set<string>>();
+    for (const po of priceOptions) {
+      const priceKey = String(po.product_price_id);
+      if (!optionMap.has(priceKey)) {
+        optionMap.set(priceKey, new Set());
+      }
+      optionMap.get(priceKey)!.add(String(po.option_id));
+    }
+
+    const matchedPrice = pickMatchingPrice(prices, optionMap, uniqueOptionIds);
+
+    return SuccessResponse(
+      res,
+      {
+        message: "Gallery retrieved successfully",
+        productPriceId: matchedPrice?._id || null,
+        gallery: matchedPrice?.gallery || [],
       },
       200,
     );

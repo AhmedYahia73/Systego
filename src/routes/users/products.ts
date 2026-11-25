@@ -4,10 +4,13 @@ import {
   getProductById,
   getBestSellingProducts,
   getProductsByCategory,
+  getGalleryByOptions,
 } from "../../controller/users/products";
 import { optionalAuthenticated } from "../../middlewares/optionalAuthenticated";
 
 const productRoute = Router();
+
+productRoute.post("/gallery", getGalleryByOptions);
 
 productRoute.use(optionalAuthenticated);
 

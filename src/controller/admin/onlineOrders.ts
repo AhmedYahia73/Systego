@@ -69,7 +69,16 @@ const BOSTA_ALLOWED = [
  * GET /admin/online-orders
  */
 export const getAllOnlineOrders = async (req: Request, res: Response) => {
-  const { status, shippingMethod } = req.query;
+  const {
+    status,
+    shippingMethod,
+    page = "1",
+    limit = "20",
+  } = req.query as Record<string, string | undefined>;
+
+  const pageNum = Math.max(1, Number(page) || 1);
+  const limitNum = Math.min(100, Math.max(1, Number(limit) || 20));
+  const skip = (pageNum - 1) * limitNum;
 
   const allowedStatuses = [
     "pending",
@@ -116,26 +125,57 @@ export const getAllOnlineOrders = async (req: Request, res: Response) => {
     console.warn("⚠️ Could not fetch activeMethod:", err);
   }
 
-  const orders = await OrderModel.find(filter)
-    .sort({ createdAt: -1 })
-    .populate({ path: "user", select: "_id name email phone" })
-    .populate({ path: "paymentMethod", select: "_id name ar_name type" })
-    .populate({ path: "warehouse", select: "_id name" })
-    .populate({ path: "cartItems.product", select: "_id name image price" })
-    .populate({
-      path: "selfShipment.deliveryManId",
-      select: "_id name phone_number",
-    })
-    .populate({
-      path: "selfShipment.warehouseId",
-      select: "_id name address",
-    })
-    .populate({
-      path: "selfShipment.pickupPointId",
-      select: "_id name address",
-    })
-    .select("+shippingMethod +shipmentType +selfShipment")
-    .lean();
+  const [orders, totalsAgg] = await Promise.all([
+    OrderModel.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .populate({ path: "user", select: "_id name email phone" })
+      .populate({ path: "paymentMethod", select: "_id name ar_name type" })
+      .populate({ path: "warehouse", select: "_id name" })
+      .populate({ path: "cartItems.product", select: "_id name image price" })
+      .populate({
+        path: "selfShipment.deliveryManId",
+        select: "_id name phone_number",
+      })
+      .populate({
+        path: "selfShipment.warehouseId",
+        select: "_id name address",
+      })
+      .populate({
+        path: "selfShipment.pickupPointId",
+        select: "_id name address",
+      })
+      .select("+shippingMethod +shipmentType +selfShipment")
+      .lean(),
+    OrderModel.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalCount: { $sum: 1 },
+          totalTaxAmount: { $sum: { $ifNull: ["$taxAmount", 0] } },
+          total: {
+            $sum: {
+              $add: [
+                { $ifNull: ["$totalPriceAfterDiscount", 0] },
+                { $ifNull: ["$taxAmount", 0] },
+              ],
+            },
+          },
+          totalShippingPrice: { $sum: { $ifNull: ["$shippingPrice", 0] } },
+        },
+      },
+    ]),
+  ]);
+
+  const aggTotals = totalsAgg[0] || {
+    totalCount: 0,
+    totalTaxAmount: 0,
+    total: 0,
+    totalShippingPrice: 0,
+  };
+  const totalOrdersCount = aggTotals.totalCount || 0;
 
   // 1) Variant ids
   const variantIds = [
@@ -223,6 +263,17 @@ export const getAllOnlineOrders = async (req: Request, res: Response) => {
   SuccessResponse(res, {
     message: "Online orders retrieved successfully",
     count: ordersWithVariants.length,
+    pagination: {
+      page: pageNum,
+      limit: limitNum,
+      total: totalOrdersCount,
+      pages: Math.ceil(totalOrdersCount / limitNum),
+    },
+    summary: {
+      totalTaxAmount: Number((aggTotals.totalTaxAmount || 0).toFixed(2)),
+      total: Number((aggTotals.total || 0).toFixed(2)),
+      totalShippingPrice: Number((aggTotals.totalShippingPrice || 0).toFixed(2)),
+    },
     activeMethod,
     orders: ordersWithVariants.map((o: any) => ({
       ...o,
